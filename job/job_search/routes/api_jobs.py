@@ -20,9 +20,13 @@ def list_jobs(
     work_type: Optional[str] = None,
     is_archived: bool = False,
     sort: str = "match_score",
+    search_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Job).filter(Job.is_archived == is_archived)
+
+    if search_id:
+        query = query.filter(Job.search_query_id == search_id)
 
     if min_score > 0:
         query = query.filter(Job.match_score >= min_score)

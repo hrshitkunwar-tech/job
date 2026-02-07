@@ -1,26 +1,64 @@
 {% extends "base.html" %}
 {% block title %}Jobs - Job Search{% endblock %}
 {% block content %}
-<div class="flex justify-between items-center mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Job Listings</h1>
-    <a href="/search" class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">New
-        Search</a>
+<div class="mb-6">
+    <div class="flex justify-between items-center mb-2">
+        <h1 class="text-2xl font-bold text-gray-900">Job Listings</h1>
+        <a href="/search"
+            class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">New
+            Search</a>
+    </div>
+    {% if search_id %}
+    <div
+        class="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-lg flex justify-between items-center text-sm">
+        <span class="flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            Filtered to Search Session #{{ search_id }}
+        </span>
+        <a href="/jobs?show_all=true" class="underline font-medium hover:text-blue-900">View All Saved Jobs</a>
+    </div>
+    {% endif %}
 </div>
 
-<!-- Filters -->
-<div class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-4 items-center">
-    <input type="text" id="filter-search" placeholder="Filter by keyword..."
-        class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500">
-    <select id="filter-work-type" class="px-3 py-2 border border-gray-300 rounded-md text-sm">
-        <option value="">All work types</option>
-        <option value="remote">Remote</option>
-        <option value="hybrid">Hybrid</option>
-        <option value="onsite">On-site</option>
-    </select>
-    <label class="flex items-center gap-2 text-sm text-gray-600">
-        <input type="range" id="filter-min-score" min="0" max="100" value="0" class="w-24">
-        Min score: <span id="score-display">0</span>%
-    </label>
+<!-- Filters & History -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+    <div class="md:col-span-1">
+        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Search History</label>
+        <select onchange="window.location.href='/jobs?search_id=' + this.value"
+            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-gray-50">
+            <option value="">-- All Runs --</option>
+            {% for run in search_runs %}
+            <option value="{{ run.id }}" {{ 'selected' if search_id==run.id else '' }}>
+                {{ run.name }} ({{ run.created_at.strftime('%m/%d') }})
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="md:col-span-1">
+        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Keyword</label>
+        <input type="text" id="filter-search" placeholder="Filter current results..."
+            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500">
+    </div>
+    <div class="md:col-span-1">
+        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Work Type</label>
+        <select id="filter-work-type" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            <option value="">All Types</option>
+            <option value="remote">Remote</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="onsite">On-site</option>
+        </select>
+    </div>
+    <div class="md:col-span-1">
+        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Min Match Score</label>
+        <div
+            class="flex items-center gap-2 text-sm text-gray-600 px-3 py-1 bg-gray-50 rounded-md border border-gray-200">
+            <input type="range" id="filter-min-score" min="0" max="100" value="0" class="flex-grow">
+            <span id="score-display" class="font-bold text-indigo-600">0</span>%
+        </div>
+    </div>
 </div>
 
 <!-- Job Grid -->

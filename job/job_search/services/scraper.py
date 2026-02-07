@@ -27,13 +27,21 @@ class LinkedInScraper:
         if max_s is None: max_s = settings.scrape_delay_max
         await asyncio.sleep(random.uniform(min_s, max_s))
 
-    async def scrape_jobs(self, query: str, location: str = "", limit: int = 10) -> List[Dict[str, Any]]:
+    async def scrape_jobs(self, query: str, location: str = "United States", limit: int = 10, check_cancelled: Callable[[], bool] = None) -> List[Dict[str, Any]]:
         """Main entry point to scrape jobs."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
             
-            # Use saved state if it exists
-            context_args = {}
+            # Use saved state and random user agent
+            user_agents = [
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            ]
+            context_args = {
+                "user_agent": random.choice(user_agents),
+                "viewport": {"width": 1280, "height": 800}
+            }
             if self.storage_state.exists():
                 context_args["storage_state"] = str(self.storage_state)
             
@@ -102,6 +110,9 @@ class LinkedInScraper:
                 sem = asyncio.Semaphore(3) # Limit concurrency to avoid blocking
 
                 async def fetch_detail_with_sem(job):
+                    if check_cancelled and check_cancelled():
+                        return job
+
                     async with sem:
                         try:
                             # Add random small delay to jitter
@@ -112,10 +123,16 @@ class LinkedInScraper:
                             logger.error(f"Failed to get details for {job['url']}: {e}")
                         return job
 
-                # Execute in parallel
-                detailed_jobs = await asyncio.gather(*[fetch_detail_with_sem(job) for job in jobs])
+                # Execute in parallel with limited concurrency
+                logger.info(f"Fetching details for {len(jobs)} jobs...")
+                tasks = [fetch_detail_with_sem(job) for job in jobs]
+                detailed_jobs = await asyncio.gather(*tasks)
+                
+                # Filter out jobs that failed completely
+                final_jobs = [j for j in detailed_jobs if j.get("description")]
+                logger.info(f"Successfully scraped {len(final_jobs)} jobs with full details.")
 
-                return detailed_jobs
+                return final_jobs
 
             finally:
                 # Save state for next time
@@ -212,35 +229,106 @@ class LinkedInScraper:
             await asyncio.sleep(2)
 
         # Target the main search results list specifically
-        # LinkedIn search results use 'ul.jobs-search-results__list'
-        job_cards = await page.query_selector_all("li.jobs-search-results__list-item, .scaffold-layout__list-item")
+        selectors = [
+            "li.jobs-search-results__list-item",
+            ".scaffold-layout__list-item",
+            ".job-card-container",
+            ".base-card",
+            "div[data-job-id]",
+            "li[data-occludable-job-id]"
+        ]
         
-        # If no results with those specific classes, fall back but log it
+        job_cards = []
+        for selector in selectors:
+            job_cards = await page.query_selector_all(selector)
+            if job_cards:
+                logger.info(f"Found {len(job_cards)} job cards using selector: {selector}")
+                break
+        
         if not job_cards:
-            logger.info("Specific search item classes not found, trying broader selectors...")
-            job_cards = await page.query_selector_all(".job-card-container, .base-card")
+            logger.warning("No job cards found with any known selectors.")
+            # Last ditch effort: any link that looks like a job link
+            all_links = await page.query_selector_all("a[href*='/jobs/view/']")
+            logger.info(f"Found {len(all_links)} potential job view links in last-ditch effort")
+            # This is harder to extract company/title from, but we could try to get the parent card
+            if all_links:
+                # Deduplicate and take parents
+                unique_links = []
+                seen_urls = set()
+                for link in all_links:
+                    url = await link.get_attribute("href")
+                    if url and "/jobs/view/" in url:
+                        clean_url = url.split("?")[0]
+                        if clean_url not in seen_urls:
+                            seen_urls.add(clean_url)
+                            unique_links.append(link)
+                
+                # Treat these links as "cards" for the loop below, it will try to find title/company inside/near them
+                job_cards = unique_links
 
         for card in job_cards[:limit]:
             try:
-                # Optimized selectors for actual search result cards
-                title_elem = await card.query_selector(".job-card-list__title, .base-search-card__title, .job-card-container__link")
-                company_elem = await card.query_selector(".job-card-container__company-name, .base-search-card__subtitle, .job-card-container__primary-description")
-                link_elem = await card.query_selector("a.job-card-list__title, a.base-card__full-link, a.job-card-container__link")
+                # Robust multi-selector approach for job cards
+                title_selectors = [
+                    ".job-card-list__title", 
+                    ".base-search-card__title", 
+                    ".job-card-container__link",
+                    "h3.base-search-card__title",
+                    "a.job-card-list__title"
+                ]
+                company_selectors = [
+                    ".job-card-container__company-name", 
+                    ".base-search-card__subtitle", 
+                    ".job-card-container__primary-description",
+                    "h4.base-search-card__subtitle"
+                ]
+                link_selectors = [
+                    "a.job-card-list__title", 
+                    "a.base-card__full-link", 
+                    "a.job-card-container__link",
+                    ".base-search-card__title-link"
+                ]
+                
+                title_elem = None
+                for selector in title_selectors:
+                    title_elem = await card.query_selector(selector)
+                    if title_elem: break
+                
+                company_elem = None
+                for selector in company_selectors:
+                    company_elem = await card.query_selector(selector)
+                    if company_elem: break
+                
+                link_elem = None
+                for selector in link_selectors:
+                    link_elem = await card.query_selector(selector)
+                    if link_elem: break
                 
                 if not title_elem or not link_elem:
-                    continue
-
-                title = (await title_elem.inner_text()).strip()
-                company = (await company_elem.inner_text()).strip() if company_elem else "Unknown"
+                    # If this "card" IS the link (from last ditch effort)
+                    if not link_elem and await card.evaluate("node => node.tagName === 'A'"):
+                         link_elem = card
+                         title = (await card.inner_text()).strip()
+                         company = "Unknown"
+                    else:
+                        continue
+                else:
+                    title = (await title_elem.inner_text()).strip()
+                    company = (await company_elem.inner_text()).strip() if company_elem else "Unknown"
+                
                 url = await link_elem.get_attribute("href")
                 if url and not url.startswith("http"):
                     url = self.base_url + url
                 
                 # Clean URL (remove tracking params)
-                if "?" in url:
+                if url and "?" in url:
                     url = url.split("?")[0]
                 
-                external_id = url.split("/")[-2] if url.endswith("/") else url.split("/")[-1]
+                if not url: continue
+                
+                # Extract external ID from URL robustly
+                parts = url.strip("/").split("/")
+                external_id = parts[-1] if parts else "unknown"
 
                 jobs.append({
                     "external_id": external_id,
@@ -261,50 +349,53 @@ class LinkedInScraper:
             
             # Try multiple selectors for job description
             desc_selectors = [
-                ".jobs-description", 
-                "#job-details", 
-                ".jobs-description-content", 
-                ".jobs-box__html-content",
-                ".show-more-less-html__markup"
+                 ".jobs-description", 
+                 "#job-details", 
+                 ".jobs-box__html-content",
+                 ".show-more-less-html__markup",
+                 ".description__text"
             ]
             
             description = ""
             description_html = ""
             for selector in desc_selectors:
                 try:
-                    await page.wait_for_selector(selector, timeout=5000)
                     elem = await page.query_selector(selector)
                     if elem:
                         description = await elem.inner_text()
                         description_html = await elem.inner_html()
-                        if description.strip():
-                            break
-                except Exception:
-                    continue
+                        if description.strip(): break
+                except Exception: continue
 
-            # Location extraction
-            loc_selectors = [
-                ".jobs-unified-top-card__bullet", 
-                ".topcard__flavor--bullet",
-                ".job-details-jobs-unified-top-card__bullet",
-                ".jobs-unified-top-card__workplace-type"
-            ]
+            # Location extraction - broader search
             location = ""
+            loc_selectors = [
+                ".jobs-unified-top-card__bullet",
+                ".top-card-layout__first-subline",
+                ".job-details-jobs-unified-top-card__bullet",
+                "span.jobs-unified-top-card__bullet",
+                ".topcard__flavor--bullet"
+            ]
             for selector in loc_selectors:
-                elem = await page.query_selector(selector)
-                if elem:
-                    location = await elem.inner_text()
-                    if location.strip():
-                        break
+                try:
+                    elem = await page.query_selector(selector)
+                    if elem:
+                        text = (await elem.inner_text()).strip()
+                        if text and not any(x in text.lower() for x in ["applied", "applicants", "ago"]):
+                            location = text
+                            break
+                except Exception: continue
             
-            # Extract work type from description and location
-            work_type = "onsite"  # default
-            combined_text = (description + " " + location).lower()
+            # extract work type
+            work_type = "onsite"
+            workplace_elem = await page.query_selector(".jobs-unified-top-card__workplace-type, .topcard__flavor--bullet:last-child")
+            if workplace_elem:
+                wt_text = (await workplace_elem.inner_text()).lower()
+                if "remote" in wt_text: work_type = "remote"
+                elif "hybrid" in wt_text: work_type = "hybrid"
             
-            if "remote" in combined_text:
+            if work_type == "onsite" and "remote" in description.lower()[:500]:
                 work_type = "remote"
-            elif "hybrid" in combined_text:
-                work_type = "hybrid"
             
             return {
                 "description": description.strip(),

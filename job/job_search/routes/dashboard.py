@@ -61,8 +61,15 @@ def jobs_page(
     q: Optional[str] = None, 
     scraped_after: Optional[str] = None,
     search_id: Optional[int] = None,
+    show_all: bool = False,
     db: Session = Depends(get_db)
 ):
+    # Default to latest search if no filters provided
+    if not q and not search_id and not scraped_after and not show_all:
+        latest_search = db.query(SearchQuery).order_by(SearchQuery.id.desc()).first()
+        if latest_search:
+            search_id = latest_search.id
+
     query = db.query(Job).filter(Job.is_archived == False)
 
     if search_id:
@@ -82,10 +89,15 @@ def jobs_page(
 
     jobs = query.order_by(Job.match_score.desc().nullslast()).all()
     
+    # Get all search runs for the sidebar/dropdown
+    search_runs = db.query(SearchQuery).order_by(SearchQuery.created_at.desc()).all()
+    
     return templates.TemplateResponse("jobs.html", {
         "request": request,
         "jobs": jobs,
-        "q": q or ""
+        "q": q or "",
+        "search_id": search_id,
+        "search_runs": search_runs
     })
 
 
@@ -139,7 +151,14 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/search")
 def search_page(request: Request, db: Session = Depends(get_db)):
     queries = db.query(SearchQuery).order_by(SearchQuery.created_at.desc()).all()
+    
+    # Separate genuine saved searches from run logs
+    saved_searches = [q for q in queries if not q.name.startswith("Run:")]
+    run_history = [q for q in queries if q.name.startswith("Run:")]
+    
     return templates.TemplateResponse("search.html", {
         "request": request,
-        "queries": queries,
+        "queries": saved_searches, # Default loop uses saved_searches logic
+        "run_history": run_history,
+        "all_queries": queries
     })

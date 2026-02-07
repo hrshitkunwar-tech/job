@@ -150,6 +150,8 @@
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Max Results</label>
                 <select name="max_results" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="5">5 jobs</option>
+                    <option value="10">10 jobs</option>
                     <option value="25">25 jobs</option>
                     <option value="50" selected>50 jobs</option>
                     <option value="100">100 jobs</option>
@@ -250,6 +252,59 @@
         {% endfor %}
     </div>
 </div>
+
+<!-- Run History -->
+<div class="mt-8 pt-8 border-t border-gray-200">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Search Execution History</h2>
+        <button onclick="stopAllSearches()"
+            class="text-xs px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 border border-red-200 font-medium transition-colors">STOP
+            ALL ACTIVE SEARCHES</button>
+    </div>
+    <p class="text-sm text-gray-500 mb-4">Log of all automatic search runs. Click "View Results" to see jobs from a
+        specific run.</p>
+
+    <div class="space-y-3">
+        {% for run in run_history %}
+        <div class="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:bg-white hover:shadow-sm transition-all">
+            <div class="flex justify-between items-start">
+                <div>
+                    <h3 class="font-medium text-gray-900 text-sm flex items-center gap-2">
+                        {{ run.name }}
+                        <span class="text-xs text-gray-400 bg-gray-100 px-1 rounded">ID: {{ run.id }}</span>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Filters: {{ run.keywords }}
+                        {% if run.locations %} · {{ run.locations }}{% endif %}
+                        {% if run.work_types %} · {{ run.work_types }}{% endif %}
+                    </p>
+                    <div class="mt-2 text-xs text-gray-600 flex gap-4">
+                        <span>Date: {{ run.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <!-- Results count might be 0 if scraping timed out, but View Results works -->
+                        <span
+                            class="font-medium {{ 'text-green-600' if run.results_count > 0 else 'text-gray-400' }}">Found:
+                            {{ run.results_count or 'Checking...' }} jobs</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <a href="/jobs?search_id={{ run.id }}"
+                        class="px-3 py-1 text-xs font-medium bg-white text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-50">View
+                        Results</a>
+                    <button onclick="deleteSearch({{ run.id }})"
+                        class="px-2 py-1 text-xs text-gray-400 hover:text-red-600 border border-transparent hover:border-red-100 rounded">Delete
+                        Log</button>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="bg-gray-50 rounded-lg p-6 text-center text-gray-500 text-sm border border-dashed border-gray-300">
+            No execution history found.
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+
 {% endblock %}
 
 {% block scripts %}
@@ -387,8 +442,12 @@
             pollCount++;
 
             try {
-                // Fetch current job count
-                const response = await fetch('/api/jobs?per_page=1');
+                // Fetch current job count with cache-buster
+                let url = `/api/jobs?per_page=1&_t=${Date.now()}`;
+                if (currentDbSearchId) {
+                    url += `&search_id=${currentDbSearchId}`;
+                }
+                const response = await fetch(url);
                 const data = await response.json();
                 const currentCount = data.total;
 
@@ -418,17 +477,27 @@
                 }
 
                 // Stop after max time (10 minutes)
-                if (pollCount >= maxPolls) {
+                if (pollCount >= 300) { // 300 polls * 2s = 600s = 10m
                     clearInterval(progressInterval);
                     showCompletion(currentCount, keywords);
                 }
             } catch (error) {
                 console.error('Progress polling error:', error);
             }
-        }, 5000); // Poll every 5 seconds
+        }, 2000); // Poll every 2 seconds
     }
 
-    function showCompletion(jobCount, keywords) {
+    async function showCompletion(jobCount, keywords) {
+        // Final check to catch any last-second saves
+        let finalCount = jobCount;
+        try {
+            let url = `/api/jobs?per_page=1&_t=${Date.now()}`;
+            if (currentDbSearchId) url += `&search_id=${currentDbSearchId}`;
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.total > finalCount) finalCount = data.total;
+        } catch (e) { }
+
         const progressDiv = document.getElementById('search-progress');
         const progressBar = document.getElementById('progress-bar');
 
@@ -457,7 +526,7 @@
             }
         }
 
-        completionMessage.innerHTML = `Found ${jobCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
+        completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
         completionDiv.classList.remove('hidden');
 
         // Auto-dismiss after 30 seconds (increased from 10)
@@ -643,12 +712,14 @@
                         progressDiv.classList.remove('hidden');
                         document.getElementById('progress-status').textContent = 'Continuing active search for "' + (data.keywords || 'jobs') + '"...';
 
-                        window.currentSearchId = data.search_id; // UUID
-                        window.currentDbSearchId = data.db_search_id; // INT
+                        currentSearchId = data.search_id; // Local
+                        window.currentSearchId = data.search_id; // For consistency
+                        currentDbSearchId = data.db_search_id; // Local
+                        window.currentDbSearchId = data.db_search_id; // For consistency
 
-                        // Start polling
+                        // Start polling with correct limit
                         if (typeof startProgressPolling === 'function') {
-                            startProgressPolling(data.keywords, 50);
+                            startProgressPolling(data.keywords, data.limit || 50);
                         }
                     }
                 }
@@ -663,5 +734,18 @@
 
     window.runSavedSearch = runSavedSearch;
     window.deleteSearch = deleteSearch;
+
+    async function stopAllSearches() {
+        if (!confirm('This will immediately HALT all running search tasks in the background. Proceed?')) return;
+        try {
+            const res = await fetch('/api/search/stop-all', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message);
+            location.reload();
+        } catch (e) {
+            alert('Failed to stop searches: ' + e);
+        }
+    }
+    window.stopAllSearches = stopAllSearches;
 </script>
 {% endblock %}

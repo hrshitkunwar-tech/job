@@ -7,6 +7,10 @@ from fastapi.templating import Jinja2Templates
 
 from job_search.config import settings
 from job_search.database import init_db
+from job_search.utils.logging_config import setup_logging
+
+# Initialize Logging
+setup_logging()
 
 
 @asynccontextmanager

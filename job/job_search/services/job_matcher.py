@@ -32,11 +32,11 @@ class MatchResult:
 
 class JobMatcher:
     WEIGHTS = {
-        "skill": 0.40,
-        "title": 0.20,
-        "experience": 0.15,
-        "location": 0.10,
-        "keyword": 0.15,
+        "skill": 0.45,
+        "title": 0.35,
+        "experience": 0.05,
+        "location": 0.05,
+        "keyword": 0.10,
     }
 
     def __init__(self, llm_client=None):
@@ -119,7 +119,11 @@ class JobMatcher:
         if not user_skills:
             return 50.0, matched, missing
 
-        score = (len(matched) / len(user_skills)) * 100
+        # Instead of dividing by total user skills (which penalizes broad profiles),
+        # we check how many of the profile skills are found. 
+        # Most JDs mention 6-10 keywords. Matching 8 is a "perfect" score.
+        target_match_count = 8
+        score = (len(matched) / target_match_count) * 100
         return min(score, 100.0), matched, missing
 
     def _score_title(self, job_title: str, target_roles: list[str]) -> float:

@@ -57,17 +57,20 @@ async def stop_search(search_id: str):
     else:
         raise HTTPException(status_code=404, detail="Search not found or already completed")
 
+@router.post("/stop-all")
+async def stop_all_searches():
+    """Cancel all active searches."""
+    count = 0
+    for search_id in list(active_searches.keys()):
+        active_searches[search_id]["cancelled"] = True
+        count += 1
+    return {"message": f"Requested stop for {count} active searches. Progress indicators should clear shortly."}
+
 @router.post("/run")
 async def run_search(request: SearchRunRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger a LinkedIn job search. Runs in the background."""
     search_id = str(uuid.uuid4())
     
-    # Track this search in memory for cancellation
-    active_searches[search_id] = {
-        "cancelled": False,
-        "started_at": datetime.now()
-    }
-
     # Create a persistent SearchQuery record to link jobs to this specific run
     try:
         db_query = SearchQuery(
@@ -85,9 +88,16 @@ async def run_search(request: SearchRunRequest, background_tasks: BackgroundTask
         db.refresh(db_query)
         db_search_id = db_query.id
     except Exception as e:
-        # Fallback if DB save fails, though unlikely
         print(f"Failed to save search query: {e}")
         db_search_id = None
+
+    # Track this search in memory with full context
+    active_searches[search_id] = {
+        "cancelled": False,
+        "started_at": datetime.now(),
+        "db_search_id": db_search_id,
+        "params": request.model_dump()
+    }
     
     background_tasks.add_task(_run_search_task, request.model_dump(), search_id, db_search_id)
     return {
@@ -152,8 +162,7 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
         total_jobs_found = 0
         limit_per_search = params.get("limit", 50)
 
-        # Run searches for each location, accumulating results
-        all_jobs = []
+        # Run searches for each location, accumulating and saving results incrementally
         for location in locations_list:
             if total_jobs_found >= limit_per_search:
                 break
@@ -169,57 +178,69 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
             found_jobs = await scraper.scrape_jobs(
                 query=params.get("keywords"),
                 location=location or "",
-                limit=min(limit_per_search - total_jobs_found, limit_per_search)
+                limit=limit_per_search - total_jobs_found,
+                check_cancelled=lambda: active_searches.get(search_id, {}).get("cancelled", False)
             )
-            all_jobs.extend(found_jobs)
-            total_jobs_found += len(found_jobs)
-            logger.info(f"Completed search for location '{location}'. Total jobs found so far: {total_jobs_found}")
+            
+            # Process and save this batch
+            batch_jobs = []
+            for job_data in found_jobs:
+                try:
+                    if not job_data.get("title"):
+                        continue
 
-        for job_data in all_jobs:
+                    # Check if exists
+                    existing = db.query(Job).filter(Job.external_id == job_data.get("external_id")).first()
+                    if existing:
+                        if db_search_id:
+                            existing.search_query_id = db_search_id
+                        total_jobs_found += 1
+                        continue
+
+                    # Score job
+                    match_result = matcher.score_job(job_data, profile_data)
+
+                    # Create model
+                    job = Job(
+                        external_id=job_data.get("external_id"),
+                        source=job_data.get("source", "linkedin"),
+                        title=job_data.get("title"),
+                        company=job_data.get("company", "Unknown"),
+                        location=job_data.get("location", ""),
+                        work_type=job_data.get("work_type", "onsite"),
+                        description=job_data.get("description", ""),
+                        description_html=job_data.get("description_html", ""),
+                        url=job_data.get("url", ""),
+                        match_score=match_result.overall_score,
+                        match_details={
+                            "skill_score": match_result.skill_score,
+                            "title_score": match_result.title_score,
+                            "explanation": match_result.explanation,
+                            "matched_skills": match_result.matched_skills,
+                            "missing_skills": match_result.missing_skills
+                        },
+                        search_query_id=db_search_id
+                    )
+                    db.add(job)
+                    total_jobs_found += 1
+                    
+                    if total_jobs_found >= limit_per_search:
+                        break
+                        
+                except Exception as inner_e:
+                    logger.error(f"Failed to prepare job: {inner_e}")
+                    continue
+            
+            # Commit the entire batch for this location
             try:
-                if not job_data.get("title"):
-                    continue
-
-                # Check if exists
-                existing = db.query(Job).filter(Job.external_id == job_data.get("external_id")).first()
-                if existing:
-                    # Update the search_query_id to the current one so it appears in this search's results
-                    if db_search_id:
-                        existing.search_query_id = db_search_id
-                        db.commit()
-                    continue
-
-                # Score job
-                match_result = matcher.score_job(job_data, profile_data)
-
-                # Save to DB
-                job = Job(
-                    external_id=job_data.get("external_id"),
-                    source=job_data.get("source", "linkedin"),
-                    title=job_data.get("title"),
-                    company=job_data.get("company", "Unknown"),
-                    location=job_data.get("location", ""),
-                    work_type=job_data.get("work_type", "onsite"),
-                    description=job_data.get("description", ""),
-                    description_html=job_data.get("description_html", ""),
-                    url=job_data.get("url", ""),
-                    match_score=match_result.overall_score,
-                    match_details={
-                        "skill_score": match_result.skill_score,
-                        "title_score": match_result.title_score,
-                        "explanation": match_result.explanation,
-                        "matched_skills": match_result.matched_skills,
-                        "missing_skills": match_result.missing_skills
-                    },
-                    search_query_id=db_search_id
-                )
-                db.add(job)
                 db.commit()
-                logger.info(f"Saved job: {job.title} at {job.company} (Score: {job.match_score})")
-            except Exception as inner_e:
-                logger.error(f"Failed to process individual job: {inner_e}")
+                logger.info(f"Committed batch for {location}. Session total: {total_jobs_found}")
+            except Exception as e:
+                logger.error(f"Batch commit failed: {e}")
                 db.rollback()
-                continue
+
+            if total_jobs_found >= limit_per_search:
+                break
 
     except Exception as e:
         logger.exception(f"Search task failed: {e}")
@@ -230,12 +251,19 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
 
 @router.get("/active")
 def get_active_search():
-    if not active_searches:
+    # Only return searches that aren't cancelled
+    active = {sid: data for sid, data in active_searches.items() if not data.get("cancelled")}
+    if not active:
         return {"active": False}
-    search_id, data = next(iter(active_searches.items()))
+    
+    # Sort by started_at so we always track the MOST RECENT search in the UI
+    sorted_active = sorted(active.items(), key=lambda x: x[1].get("started_at", datetime.min), reverse=True)
+    search_id, data = sorted_active[0]
+    
     return {
         "active": True,
         "search_id": search_id,
         "db_search_id": data.get("db_search_id"),
-        "keywords": data.get("params", {}).get("keywords") or data.get("keywords")
+        "keywords": data.get("params", {}).get("keywords") or data.get("keywords"),
+        "limit": data.get("params", {}).get("limit", 50)
     }
