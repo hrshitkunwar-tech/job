@@ -6,12 +6,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
 
 from job_search.database import get_db
-from job_search.models import Application, ApplicationStatus, Job
+from job_search.models import Application, ApplicationStatus, Job, UserProfile, Resume
 from job_search.schemas.application import (
     ApplicationCreate,
     ApplicationUpdate,
     ApplicationResponse,
     ApplicationStatsResponse,
+    AutomateRequest,
     BatchApplyRequest,
 )
 
@@ -72,6 +73,72 @@ def update_application(app_id: int, request: ApplicationUpdate, db: Session = De
     return application
 
 
+# ------------------------------------------------------------------
+# Pre-apply preview (powers the confirmation modal)
+# ------------------------------------------------------------------
+
+@router.get("/{app_id}/preview")
+def preview_application(app_id: int, db: Session = Depends(get_db)):
+    """Return everything the user needs to see before confirming an application."""
+    app = db.query(Application).filter(Application.id == app_id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    job = db.query(Job).filter(Job.id == app.job_id).first()
+    profile = db.query(UserProfile).first()
+    resumes = db.query(Resume).order_by(Resume.is_primary.desc()).all()
+
+    # Determine tailoring strategy
+    from job_search.config import settings
+    if settings.llm_provider == "ollama":
+        tailoring_strategy = "AI-tailored (Ollama)"
+    elif settings.llm_provider == "claude" and settings.anthropic_api_key:
+        tailoring_strategy = "AI-tailored (Claude)"
+    elif settings.llm_provider == "openai" and settings.openai_api_key:
+        tailoring_strategy = "AI-tailored (OpenAI)"
+    else:
+        tailoring_strategy = "Keyword-optimized (no LLM)"
+
+    return {
+        "application": {
+            "id": app.id,
+            "status": app.status.value if hasattr(app.status, "value") else app.status,
+        },
+        "job": {
+            "id": job.id,
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "url": job.url,
+            "match_score": job.match_score,
+            "is_easy_apply": job.is_easy_apply,
+            "source": job.source,
+            "match_details": job.match_details,
+        } if job else None,
+        "profile": {
+            "full_name": profile.full_name,
+            "email": profile.email,
+            "phone": profile.phone,
+            "location": profile.location,
+            "linkedin_url": profile.linkedin_url,
+        } if profile else None,
+        "resumes": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "file_type": r.file_type,
+                "is_primary": r.is_primary,
+            }
+            for r in resumes
+        ],
+        "tailoring_strategy": tailoring_strategy,
+    }
+
+
+# ------------------------------------------------------------------
+# Stats
+# ------------------------------------------------------------------
+
 @router.get("/stats", response_model=ApplicationStatsResponse)
 def get_stats(db: Session = Depends(get_db)):
     total = db.query(Application).count()
@@ -87,6 +154,10 @@ def get_stats(db: Session = Depends(get_db)):
             stats[status_val] = count
     return ApplicationStatsResponse(**stats)
 
+
+# ------------------------------------------------------------------
+# Batch apply
+# ------------------------------------------------------------------
 
 @router.post("/batch-apply")
 def batch_apply(request: BatchApplyRequest, db: Session = Depends(get_db)):
@@ -110,15 +181,25 @@ def batch_apply(request: BatchApplyRequest, db: Session = Depends(get_db)):
     return {"created": len(created), "skipped": len(skipped), "job_ids": created}
 
 
+# ------------------------------------------------------------------
+# Automate (with resume selection)
+# ------------------------------------------------------------------
+
 @router.post("/{app_id}/automate")
-async def automate_application(app_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Launch the automated application process for a queued application."""
+async def automate_application(
+    app_id: int,
+    background_tasks: BackgroundTasks,
+    request: Optional[AutomateRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """Launch automated application with optional resume selection."""
     from job_search.services.applier import JobApplier
-    
+
     app = db.query(Application).filter(Application.id == app_id).first()
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
-    
+
+    resume_id = request.resume_id if request else None
     applier = JobApplier()
-    background_tasks.add_task(applier.run_automation, app_id)
-    return {"message": "Automation started", "application_id": app_id}
+    background_tasks.add_task(applier.run_automation, app_id, resume_id)
+    return {"message": "Automation started", "application_id": app_id, "resume_id": resume_id}

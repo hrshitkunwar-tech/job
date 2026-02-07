@@ -116,7 +116,7 @@ class JobApplier:
     # Main automation entry point
     # ------------------------------------------------------------------
 
-    async def run_automation(self, application_id: int):
+    async def run_automation(self, application_id: int, resume_id: Optional[int] = None):
         """Main entry point: tailor resume, then open browser and apply."""
         db = SessionLocal()
         app = db.query(Application).filter(Application.id == application_id).first()
@@ -126,7 +126,12 @@ class JobApplier:
 
         job = app.job
         user = db.query(UserProfile).order_by(UserProfile.id.desc()).first()
-        resume = db.query(Resume).filter(Resume.is_primary == True).first()
+
+        # Use user-selected resume, or fall back to primary
+        if resume_id:
+            resume = db.query(Resume).filter(Resume.id == resume_id).first()
+        else:
+            resume = db.query(Resume).filter(Resume.is_primary == True).first()
 
         if not user:
             app.status = ApplicationStatus.FAILED

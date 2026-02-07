@@ -37,5 +37,9 @@ class ApplicationStatsResponse(BaseModel):
     failed: int = 0
 
 
+class AutomateRequest(BaseModel):
+    resume_id: Optional[int] = None
+
+
 class BatchApplyRequest(BaseModel):
     job_ids: list[int]
