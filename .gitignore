@@ -48,3 +48,11 @@ htmlcov/
 .agents/
 .agent/
 ccpm/
+
+# Session artifacts
+DEBUG_SESSION_REPORT.md
+GOOGLE_CAREERS_*.md
+PROGRESS_TRACKING_AND_SUPABASE.md
+test_output*.log
+test_google_*.py
+data/*.stable_backup
