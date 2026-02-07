@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Jobs - Job Search{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Job Listings</h1>
+    <a href="/search" class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">New Search</a>
+</div>
+
+<!-- Filters -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-4 items-center">
+    <input type="text" id="filter-search" placeholder="Filter by keyword..."
+           class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500">
+    <select id="filter-work-type" class="px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <option value="">All work types</option>
+        <option value="remote">Remote</option>
+        <option value="hybrid">Hybrid</option>
+        <option value="onsite">On-site</option>
+    </select>
+    <label class="flex items-center gap-2 text-sm text-gray-600">
+        <input type="range" id="filter-min-score" min="0" max="100" value="0" class="w-24">
+        Min score: <span id="score-display">0</span>%
+    </label>
+</div>
+
+<!-- Job Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="jobs-grid">
+    {% for job in jobs %}
+    <div class="job-card" data-title="{{ job.title|lower }}" data-company="{{ job.company|lower }}"
+         data-work-type="{{ job.work_type or '' }}" data-score="{{ job.match_score or 0 }}">
+        {% include "partials/job_card.html" %}
+    </div>
+    {% else %}
+    <div class="col-span-full bg-white rounded-lg shadow p-8 text-center text-gray-500">
+        <p class="text-lg">No jobs found yet</p>
+        <p class="mt-2">Go to <a href="/search" class="text-indigo-600 hover:underline">Search</a> to find jobs on LinkedIn.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const searchInput = document.getElementById('filter-search');
+const workTypeSelect = document.getElementById('filter-work-type');
+const scoreSlider = document.getElementById('filter-min-score');
+const scoreDisplay = document.getElementById('score-display');
+
+function filterJobs() {
+    const search = searchInput.value.toLowerCase();
+    const workType = workTypeSelect.value;
+    const minScore = parseInt(scoreSlider.value);
+    scoreDisplay.textContent = minScore;
+
+    document.querySelectorAll('.job-card').forEach(card => {
+        const title = card.dataset.title;
+        const company = card.dataset.company;
+        const cardWorkType = card.dataset.workType;
+        const score = parseFloat(card.dataset.score);
+
+        const matchesSearch = !search || title.includes(search) || company.includes(search);
+        const matchesType = !workType || cardWorkType === workType;
+        const matchesScore = score >= minScore;
+
+        card.style.display = matchesSearch && matchesType && matchesScore ? '' : 'none';
+    });
+}
+
+searchInput?.addEventListener('input', filterJobs);
+workTypeSelect?.addEventListener('change', filterJobs);
+scoreSlider?.addEventListener('input', filterJobs);
+</script>
+{% endblock %}

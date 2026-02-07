@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Resumes - Job Search{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Resumes</h1>
+
+<!-- Upload -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Upload Resume</h2>
+    <form id="upload-form" class="flex items-center gap-4">
+        <input type="text" id="resume-name" placeholder="Resume name (e.g., Master Resume)"
+               class="px-3 py-2 border border-gray-300 rounded-md text-sm flex-1" value="My Resume">
+        <input type="file" id="resume-file" accept=".pdf,.docx,.doc"
+               class="text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
+        <button type="submit"
+                class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+            Upload & Parse
+        </button>
+    </form>
+    <div id="upload-status" class="mt-2 text-sm hidden"></div>
+</div>
+
+<!-- Resume List -->
+<div class="space-y-4">
+    {% for resume in resumes %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex justify-between items-start">
+            <div>
+                <h3 class="text-lg font-semibold text-gray-900">
+                    {{ resume.name }}
+                    {% if resume.is_primary %}
+                    <span class="ml-2 px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-800">Primary</span>
+                    {% endif %}
+                </h3>
+                <p class="text-sm text-gray-500">{{ resume.file_type|upper }} &middot; Uploaded {{ resume.created_at.strftime('%b %d, %Y') if resume.created_at else '' }}</p>
+            </div>
+        </div>
+
+        {% if resume.parsed_data %}
+        <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            {% if resume.parsed_data.get("name") %}
+            <div><span class="text-gray-500">Name:</span> {{ resume.parsed_data.name }}</div>
+            {% endif %}
+            {% if resume.parsed_data.get("email") %}
+            <div><span class="text-gray-500">Email:</span> {{ resume.parsed_data.email }}</div>
+            {% endif %}
+            {% if resume.parsed_data.get("headline") %}
+            <div class="col-span-2"><span class="text-gray-500">Headline:</span> {{ resume.parsed_data.headline }}</div>
+            {% endif %}
+            {% if resume.parsed_data.get("skills") %}
+            <div class="col-span-2">
+                <span class="text-gray-500">Skills:</span>
+                <div class="flex flex-wrap gap-1 mt-1">
+                    {% for skill in resume.parsed_data.skills[:20] %}
+                    <span class="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{{ skill }}</span>
+                    {% endfor %}
+                    {% if resume.parsed_data.skills|length > 20 %}
+                    <span class="text-xs text-gray-400">+{{ resume.parsed_data.skills|length - 20 }} more</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+        No resumes uploaded yet. Upload your first resume above.
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('upload-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('resume-file');
+    const nameInput = document.getElementById('resume-name');
+    const status = document.getElementById('upload-status');
+
+    if (!fileInput.files.length) {
+        status.textContent = 'Please select a file';
+        status.className = 'mt-2 text-sm text-red-600';
+        return;
+    }
+
+    status.textContent = 'Uploading and parsing...';
+    status.className = 'mt-2 text-sm text-indigo-600';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    const res = await fetch(`/api/resumes/upload?name=${encodeURIComponent(nameInput.value)}`, {
+        method: 'POST',
+        body: formData,
+    });
+
+    if (res.ok) {
+        location.reload();
+    } else {
+        const data = await res.json();
+        status.textContent = data.detail || 'Upload failed';
+        status.className = 'mt-2 text-sm text-red-600';
+    }
+});
+</script>
+{% endblock %}

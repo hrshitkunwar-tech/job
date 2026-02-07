@@ -1,0 +1,526 @@
+{% extends "base.html" %}
+{% block title %}Search - Job Search{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Job Search</h1>
+
+<!-- Search Progress Indicator -->
+<div id="search-progress"
+    class="hidden bg-gradient-to-r from-indigo-50 to-blue-50 border-l-4 border-indigo-500 rounded-lg shadow-lg p-6 mb-6">
+    <div class="flex items-start justify-between">
+        <div class="flex-1">
+            <div class="flex items-center mb-3">
+                <svg class="animate-spin h-5 w-5 text-indigo-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none"
+                    viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                    </path>
+                </svg>
+                <h3 class="text-lg font-semibold text-gray-900" id="progress-title">Search in Progress...</h3>
+            </div>
+            <p class="text-sm text-gray-700 mb-2" id="progress-status">Initializing search...</p>
+            <div class="flex items-center gap-4 text-sm">
+                <span class="font-medium text-indigo-600" id="jobs-found-count">0 jobs found</span>
+                <span class="text-gray-500" id="current-location"></span>
+            </div>
+            <div class="mt-3 bg-white rounded-full h-2 overflow-hidden">
+                <div id="progress-bar" class="bg-indigo-600 h-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+        </div>
+        <button onclick="dismissProgress()" class="ml-4 text-gray-400 hover:text-gray-600">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clip-rule="evenodd"></path>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<!-- Completion Notification -->
+<div id="completion-notification" class="hidden bg-green-50 border-l-4 border-green-500 rounded-lg shadow-lg p-6 mb-6">
+    <div class="flex items-start justify-between">
+        <div class="flex items-center">
+            <svg class="h-6 w-6 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <div>
+                <h3 class="text-lg font-semibold text-green-900">Search Complete!</h3>
+                <p class="text-sm text-green-700 mt-1" id="completion-message">Found 0 jobs. <a href="/jobs"
+                        class="underline font-medium">View all jobs →</a></p>
+            </div>
+        </div>
+        <button onclick="dismissCompletion()" class="text-green-400 hover:text-green-600">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clip-rule="evenodd"></path>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<!-- New Search -->
+<div class="bg-white rounded-lg shadow p-6 mb-8">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Run New Search</h2>
+    <form id="search-form" class="space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Keywords</label>
+                <input type="text" name="keywords" required
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                    placeholder="e.g., python backend engineer">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Locations (press Enter to add)</label>
+                <div class="border border-gray-300 rounded-md p-2 min-h-[42px] flex flex-wrap gap-2 items-center"
+                    id="location-container" onclick="document.getElementById('location-input').focus()">
+                    <input type="text" id="location-input" class="flex-1 min-w-[120px] outline-none text-sm"
+                        placeholder="e.g., India, Remote, San Francisco">
+                </div>
+                <input type="hidden" name="locations" id="locations-hidden">
+                <p class="text-xs text-gray-500 mt-1">Examples: India, Remote, United States, London</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Work Types (select multiple)</label>
+                <div class="space-y-2">
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="work_types" value="remote"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Remote</span>
+                    </label>
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="work_types" value="hybrid"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Hybrid</span>
+                    </label>
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="work_types" value="onsite"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">On-site</span>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Experience Levels (select multiple)</label>
+                <div class="space-y-2">
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="experience_levels" value="entry"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Entry Level</span>
+                    </label>
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="experience_levels" value="associate"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Associate</span>
+                    </label>
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="experience_levels" value="mid-senior"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Mid-Senior</span>
+                    </label>
+                    <label class="inline-flex items-center mr-4">
+                        <input type="checkbox" name="experience_levels" value="director"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Director</span>
+                    </label>
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="experience_levels" value="executive"
+                            class="rounded border-gray-300 text-indigo-600">
+                        <span class="ml-2 text-sm">Executive</span>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Date Posted</label>
+                <select name="date_posted" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="">Any time</option>
+                    <option value="past_24h">Past 24 hours</option>
+                    <option value="past_week">Past week</option>
+                    <option value="past_month">Past month</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Max Results</label>
+                <select name="max_results" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="25">25 jobs</option>
+                    <option value="50" selected>50 jobs</option>
+                    <option value="100">100 jobs</option>
+                    <option value="200">200 jobs</option>
+                </select>
+            </div>
+            <div class="flex items-end gap-4">
+                <label class="flex items-center gap-2 text-sm">
+                    <input type="checkbox" name="easy_apply_only" checked class="rounded border-gray-300">
+                    Easy Apply only
+                </label>
+            </div>
+        </div>
+        <div class="flex gap-3">
+            <button type="submit"
+                class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+                Search Now
+            </button>
+            <button type="button" onclick="saveSearch()"
+                class="px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+                Save Search
+            </button>
+        </div>
+    </form>
+    <div id="search-status" class="mt-3 text-sm hidden"></div>
+</div>
+
+<!-- Saved Searches -->
+<div>
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Saved Searches</h2>
+        <div class="text-xs text-gray-500">
+            <svg class="inline w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clip-rule="evenodd"></path>
+            </svg>
+            Tip: Click "Save Search" button above to save your search criteria for later
+        </div>
+    </div>
+    <div class="space-y-3">
+        {% for query in queries %}
+        <div class="bg-white rounded-lg shadow p-4 flex justify-between items-center">
+            <div>
+                <h3 class="font-medium text-gray-900">{{ query.name }}</h3>
+                <p class="text-sm text-gray-500">
+                    {{ query.keywords }}
+                    {% if query.location %} &middot; {{ query.location }}{% endif %}
+                    {% if query.work_type %} &middot; {{ query.work_type }}{% endif %}
+                </p>
+                <p class="text-xs text-gray-400">
+                    {{ query.results_count }} results
+                    {% if query.last_run_at %} &middot; Last run: {{ query.last_run_at.strftime('%b %d') }}{% endif %}
+                </p>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="runSavedSearch({{ query.id }})"
+                    class="px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">Run</button>
+                <button onclick="deleteSearch({{ query.id }})"
+                    class="px-3 py-1 text-sm bg-red-50 text-red-600 rounded hover:bg-red-100">Delete</button>
+            </div>
+        </div>
+        {% else %}
+        <div class="bg-white rounded-lg shadow p-6 text-center text-gray-500">
+            No saved searches. Create one above.
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Location tags management
+    const locations = [];
+    const locationInput = document.getElementById('location-input');
+    const locationContainer = document.getElementById('location-container');
+    const locationsHidden = document.getElementById('locations-hidden');
+
+    function addLocation(value) {
+        const trimmed = value.trim();
+        if (trimmed && !locations.includes(trimmed)) {
+            locations.push(trimmed);
+            renderLocationTags();
+            locationInput.value = '';
+            locationsHidden.value = JSON.stringify(locations);
+        }
+    }
+
+    function removeLocation(index) {
+        locations.splice(index, 1);
+        renderLocationTags();
+        locationsHidden.value = JSON.stringify(locations);
+    }
+
+    function renderLocationTags() {
+        const existingTags = locationContainer.querySelectorAll('.location-tag');
+        existingTags.forEach(tag => tag.remove());
+
+        locations.forEach((loc, index) => {
+            const tag = document.createElement('span');
+            tag.className = 'location-tag inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 text-indigo-800 rounded text-sm';
+            tag.innerHTML = `
+            ${loc}
+            <button type="button" onclick="removeLocation(${index})" class="hover:text-indigo-900">
+                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                </svg>
+            </button>
+        `;
+            locationContainer.insertBefore(tag, locationInput);
+        });
+    }
+
+    locationInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addLocation(locationInput.value);
+        } else if (e.key === 'Backspace' && !locationInput.value && locations.length > 0) {
+            removeLocation(locations.length - 1);
+        }
+    });
+
+    window.removeLocation = removeLocation;
+
+    document.getElementById('search-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const status = document.getElementById('search-status');
+
+        // Collect multiple work types
+        const workTypes = Array.from(form.querySelectorAll('input[name="work_types"]:checked'))
+            .map(cb => cb.value);
+
+        // Collect multiple experience levels
+        const experienceLevels = Array.from(form.querySelectorAll('input[name="experience_levels"]:checked'))
+            .map(cb => cb.value);
+
+        const data = {
+            keywords: form.keywords.value,
+            locations: locations.length > 0 ? locations : null,
+            work_types: workTypes.length > 0 ? workTypes : null,
+            experience_levels: experienceLevels.length > 0 ? experienceLevels : null,
+            date_posted: form.date_posted.value || null,
+            easy_apply_only: form.easy_apply_only.checked,
+            limit: parseInt(form.max_results?.value || 50),
+        };
+
+        // Show progress indicator
+        const progressDiv = document.getElementById('search-progress');
+        const completionDiv = document.getElementById('completion-notification');
+        const progressStatus = document.getElementById('progress-status');
+        const jobsFoundCount = document.getElementById('jobs-found-count');
+        const progressBar = document.getElementById('progress-bar');
+
+        progressDiv.classList.remove('hidden');
+        completionDiv.classList.add('hidden');
+        status.textContent = '';
+
+        progressStatus.textContent = `Searching for "${data.keywords}"...`;
+        jobsFoundCount.textContent = '0 jobs found';
+        progressBar.style.width = '10%';
+
+        const res = await fetch('/api/search/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+
+        if (res.ok) {
+            // Start polling for progress
+            startProgressPolling(data.keywords, data.limit);
+        } else {
+            progressDiv.classList.add('hidden');
+            status.textContent = 'Failed to start search';
+            status.className = 'mt-3 text-sm text-red-600';
+        }
+    });
+
+    let progressInterval = null;
+    let lastJobCount = 0;
+
+    function startProgressPolling(keywords, targetLimit) {
+        lastJobCount = 0;
+        let pollCount = 0;
+        const maxPolls = 120; // 10 minutes max (5 sec intervals)
+
+        progressInterval = setInterval(async () => {
+            pollCount++;
+
+            try {
+                // Fetch current job count
+                const response = await fetch('/api/jobs?limit=1000');
+                const jobs = await response.json();
+                const currentCount = jobs.length;
+
+                // Update UI
+                document.getElementById('jobs-found-count').textContent = `${currentCount} jobs found`;
+
+                // Update progress bar (estimate based on target)
+                const progress = Math.min((currentCount / targetLimit) * 100, 95);
+                document.getElementById('progress-bar').style.width = `${progress}%`;
+
+                // Check if new jobs were found
+                if (currentCount > lastJobCount) {
+                    lastJobCount = currentCount;
+                    pollCount = 0; // Reset poll count when new jobs found
+                    document.getElementById('progress-status').textContent = `Found ${currentCount} jobs so far...`;
+                } else if (pollCount > 24) {
+                    // No new jobs for 2 minutes (24 polls × 5 seconds), assume complete
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount);
+                }
+
+                // Stop after max time (10 minutes)
+                if (pollCount >= maxPolls) {
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount);
+                }
+            } catch (error) {
+                console.error('Progress polling error:', error);
+            }
+        }, 5000); // Poll every 5 seconds
+    }
+
+    function showCompletion(jobCount) {
+        const progressDiv = document.getElementById('search-progress');
+        const progressBar = document.getElementById('progress-bar');
+
+        // Keep progress visible for a moment
+        progressBar.style.width = '100%';
+        document.getElementById('progress-status').textContent = 'Search complete!';
+
+        // Hide after 3 seconds
+        setTimeout(() => {
+            progressDiv.classList.add('hidden');
+        }, 3000);
+
+        const completionDiv = document.getElementById('completion-notification');
+        const completionMessage = document.getElementById('completion-message');
+
+        completionMessage.innerHTML = `Found ${jobCount} jobs. <a href="/jobs" class="underline font-medium">View all jobs →</a>`;
+        completionDiv.classList.remove('hidden');
+
+        // Auto-dismiss after 30 seconds (increased from 10)
+        setTimeout(() => {
+            completionDiv.classList.add('hidden');
+        }, 30000);
+    }
+
+    function dismissProgress() {
+        document.getElementById('search-progress').classList.add('hidden');
+        if (progressInterval) {
+            clearInterval(progressInterval);
+        }
+    }
+
+    function dismissCompletion() {
+        document.getElementById('completion-notification').classList.add('hidden');
+    }
+
+    window.dismissProgress = dismissProgress;
+    window.dismissCompletion = dismissCompletion;
+
+    async function saveSearch() {
+        const form = document.getElementById('search-form');
+        const name = prompt('Name this search:', form.keywords.value);
+        if (!name) return;
+
+        try {
+            // Collect multiple selections
+            const workTypes = Array.from(form.querySelectorAll('input[name="work_types"]:checked'))
+                .map(cb => cb.value);
+            const experienceLevels = Array.from(form.querySelectorAll('input[name="experience_levels"]:checked'))
+                .map(cb => cb.value);
+
+            const data = {
+                name: name,
+                keywords: form.keywords.value,
+                locations: locations.length > 0 ? JSON.stringify(locations) : null,
+                work_types: workTypes.length > 0 ? JSON.stringify(workTypes) : null,
+                experience_levels: experienceLevels.length > 0 ? JSON.stringify(experienceLevels) : null,
+                date_posted: form.date_posted.value || null,
+                easy_apply_only: form.easy_apply_only.checked,
+            };
+
+            console.log('Saving search:', data);
+
+            const res = await fetch('/api/search/queries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+
+            if (res.ok) {
+                alert('✓ Search saved successfully!');
+                location.reload();
+            } else {
+                const error = await res.text();
+                alert('✗ Failed to save search: ' + error);
+                console.error('Save error:', error);
+            }
+        } catch (error) {
+            alert('✗ Error saving search: ' + error.message);
+            console.error('Save error:', error);
+        }
+    }
+
+    // Make saveSearch globally accessible
+    window.saveSearch = saveSearch;
+
+    async function runSavedSearch(id) {
+        try {
+            // Get the saved search details
+            const searchRes = await fetch(`/api/search/queries/${id}`);
+            const search = await searchRes.json();
+
+            // Parse JSON fields
+            const locations = search.locations ? JSON.parse(search.locations) : null;
+            const workTypes = search.work_types ? JSON.parse(search.work_types) : null;
+            const experienceLevels = search.experience_levels ? JSON.parse(search.experience_levels) : null;
+
+            // Show progress indicator
+            const progressDiv = document.getElementById('search-progress');
+            const completionDiv = document.getElementById('completion-notification');
+            const progressStatus = document.getElementById('progress-status');
+            const jobsFoundCount = document.getElementById('jobs-found-count');
+            const progressBar = document.getElementById('progress-bar');
+
+            progressDiv.classList.remove('hidden');
+            completionDiv.classList.add('hidden');
+            progressStatus.textContent = `Searching for "${search.keywords}"...`;
+            jobsFoundCount.textContent = '0 jobs found';
+            progressBar.style.width = '10%';
+
+            // Run the search
+            const res = await fetch('/api/search/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    keywords: search.keywords,
+                    locations: locations,
+                    work_types: workTypes,
+                    experience_levels: experienceLevels,
+                    date_posted: search.date_posted,
+                    easy_apply_only: search.easy_apply_only,
+                    limit: 50,
+                    id: id
+                }),
+            });
+
+            if (res.ok) {
+                // Start polling for progress
+                startProgressPolling(search.keywords, 50);
+            } else {
+                progressDiv.classList.add('hidden');
+                alert('Failed to start search');
+            }
+        } catch (error) {
+            alert('Error running search: ' + error.message);
+            console.error('Run search error:', error);
+        }
+    }
+
+    async function deleteSearch(id) {
+        if (!confirm('Delete this saved search?')) return;
+        try {
+            await fetch(`/api/search/queries/${id}`, { method: 'DELETE' });
+            alert('✓ Search deleted successfully!');
+            location.reload();
+        } catch (error) {
+            alert('✗ Error deleting search: ' + error.message);
+        }
+    }
+
+    // Make functions globally accessible
+    window.runSavedSearch = runSavedSearch;
+    window.deleteSearch = deleteSearch;
+</script>
+{% endblock %}

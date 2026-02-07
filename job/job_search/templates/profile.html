@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Profile - Job Search{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Profile</h1>
+
+<form id="profile-form" class="space-y-6">
+    <!-- Personal Info -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Personal Information</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <input type="text" name="full_name" value="{{ profile.full_name if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" required>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input type="email" name="email" value="{{ profile.email if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" required>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <input type="text" name="phone" value="{{ profile.phone if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Location</label>
+                <input type="text" name="location" value="{{ profile.location if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">LinkedIn URL</label>
+                <input type="url" name="linkedin_url" value="{{ profile.linkedin_url if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Headline</label>
+                <input type="text" name="headline" value="{{ profile.headline if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., Senior Software Engineer">
+            </div>
+        </div>
+    </div>
+
+    <!-- Professional Summary -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Professional Summary</h2>
+        <textarea name="summary" rows="4"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">{{ profile.summary if profile else '' }}</textarea>
+    </div>
+
+    <!-- Skills -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Skills</h2>
+        <input type="text" name="skills" id="skills-input"
+               value="{{ (profile.skills or [])|join(', ') if profile else '' }}"
+               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+               placeholder="Comma-separated: Python, FastAPI, React, ...">
+    </div>
+
+    <!-- Job Preferences -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Job Preferences</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Target Roles</label>
+                <input type="text" name="target_roles"
+                       value="{{ (profile.target_roles or [])|join(', ') if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="Comma-separated: Backend Engineer, SWE, ...">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Target Locations</label>
+                <input type="text" name="target_locations"
+                       value="{{ (profile.target_locations or [])|join(', ') if profile else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="Comma-separated: San Francisco, Remote, ...">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Minimum Salary</label>
+                <input type="number" name="min_salary" value="{{ profile.min_salary if profile and profile.min_salary else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., 100000">
+            </div>
+        </div>
+    </div>
+
+    <!-- Save -->
+    <div class="flex justify-between items-center">
+        <button type="submit"
+                class="px-6 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+            Save Profile
+        </button>
+        <button type="button" onclick="importFromResume()"
+                class="px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+            Import from Resume
+        </button>
+    </div>
+</form>
+
+<div id="save-status" class="mt-4 text-sm hidden"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('profile-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const status = document.getElementById('save-status');
+
+    const data = {
+        full_name: form.full_name.value,
+        email: form.email.value,
+        phone: form.phone.value || null,
+        location: form.location.value || null,
+        linkedin_url: form.linkedin_url.value || null,
+        headline: form.headline.value || null,
+        summary: form.summary.value || null,
+        skills: form.skills.value ? form.skills.value.split(',').map(s => s.trim()).filter(Boolean) : [],
+        target_roles: form.target_roles.value ? form.target_roles.value.split(',').map(s => s.trim()).filter(Boolean) : [],
+        target_locations: form.target_locations.value ? form.target_locations.value.split(',').map(s => s.trim()).filter(Boolean) : [],
+        min_salary: form.min_salary.value ? parseInt(form.min_salary.value) : null,
+    };
+
+    const res = await fetch('/api/profile', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+    });
+
+    status.classList.remove('hidden');
+    if (res.ok) {
+        status.textContent = 'Profile saved successfully!';
+        status.className = 'mt-4 text-sm text-green-600';
+    } else {
+        status.textContent = 'Failed to save profile';
+        status.className = 'mt-4 text-sm text-red-600';
+    }
+    setTimeout(() => status.classList.add('hidden'), 3000);
+});
+
+async function importFromResume() {
+    const res = await fetch('/api/resumes');
+    const resumes = await res.json();
+    if (!resumes.length) {
+        alert('No resumes uploaded yet. Upload a resume first.');
+        return;
+    }
+    // Use the primary or first resume
+    const resume = resumes.find(r => r.is_primary) || resumes[0];
+    const importRes = await fetch(`/api/profile/import-from-resume?resume_id=${resume.id}`, {method: 'POST'});
+    if (importRes.ok) {
+        location.reload();
+    } else {
+        alert('Failed to import from resume');
+    }
+}
+</script>
+{% endblock %}
