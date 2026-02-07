@@ -21,6 +21,7 @@ class ApplicationResponse(BaseModel):
     applied_at: Optional[datetime] = None
     notes: Optional[str] = None
     error_message: Optional[str] = None
+    automation_log: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

@@ -421,6 +421,26 @@ class LinkedInScraper:
                             break
                 except Exception: continue
             
+            # Detect Easy Apply
+            is_easy_apply = await page.query_selector(".jobs-apply-button--easy-apply") is not None
+            
+            # extract apply url
+            apply_url = None
+            if not is_easy_apply:
+                apply_button = await page.query_selector(".jobs-apply-button")
+                if apply_button:
+                    # Often it's another page or an external link
+                    try:
+                        # For external jobs, LinkedIn often opens a new tab. 
+                        # This is tricky in a detail fetcher, but let's try to get the link if it's there
+                        async with page.expect_popup() as popup_info:
+                            await apply_button.click()
+                        popup = await popup_info.value
+                        apply_url = popup.url
+                        await popup.close()
+                    except:
+                        apply_url = url # Fallback to job page
+            
             # extract work type
             work_type = "onsite"
             workplace_elem = await page.query_selector(".jobs-unified-top-card__workplace-type, .topcard__flavor--bullet:last-child")
@@ -437,6 +457,8 @@ class LinkedInScraper:
                 "description_html": description_html.strip(),
                 "location": location.strip(),
                 "work_type": work_type,
+                "is_easy_apply": is_easy_apply,
+                "apply_url": apply_url,
                 "scraped_at": datetime.now()
             }
         except Exception as e:
@@ -469,12 +491,41 @@ class GeneralWebScraper:
             page = await context.new_page()
             
             try:
-                # Standardize URL
+                # Standardize URL - remove hash fragments for listing pages
                 if not url.startswith("http"):
                     url = "https://" + url
                 
-                await page.goto(url, wait_until="load", timeout=30000)
-                await asyncio.sleep(2) # Wait for JS rendering
+                # For Google Careers, navigate to the main listings page
+                is_google_careers = "google.com/about/careers" in url or "careers.google.com" in url
+                if is_google_careers:
+                    url = "https://www.google.com/about/careers/applications/jobs/results"
+                    logger.info(f"Detected Google Careers - using main listing page: {url}")
+                
+                logger.info(f"Navigating to: {url}")
+                await page.goto(url, wait_until="networkidle", timeout=45000)
+                
+                # Special handling for SPAs like Google Careers
+                if is_google_careers:
+                    logger.info("Google Careers detected - applying SPA scraping strategy")
+                    await asyncio.sleep(5)  # Initial wait for JS
+                    
+                    # Scroll to trigger lazy loading
+                    for _ in range(3):
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await asyncio.sleep(2)
+                    
+                    # Wait for job cards to appear
+                    try:
+                        await page.wait_for_selector("div[role='listitem'], .gc-card, [data-job-id]", timeout=10000)
+                        logger.info("Job cards detected on page")
+                    except:
+                        logger.warning("No job cards found with standard selectors")
+                else:
+                    await asyncio.sleep(4)  # Wait for JS rendering and dynamic content
+                
+                # Log page title for debugging
+                page_title = await page.title()
+                logger.info(f"Page loaded: {page_title}")
                 
                 # Evaluation script to find job-like links
                 found_links = await page.evaluate("""({keywords, locations}) => {
@@ -482,23 +533,32 @@ class GeneralWebScraper:
                     const jobs = [];
                     const seen = new Set();
                     
+                    console.log(`Total links found: ${links.length}`);
+                    
                     links.forEach(link => {
                         const text = link.innerText.trim();
                         const href = link.href;
                         if (!text || !href) return;
 
-                        // Heuristics for job links
+                        // Heuristics for job links - more permissive
                         const looksLikeJob = (
                             text.length > 5 && 
-                            text.length < 150 &&
-                            /job|career|position|opening|role|apply|details|vacancy/i.test(href) &&
-                            !/login|signup|privacy|term|cookie|blog|about|contact|press|help/i.test(href)
+                            text.length < 200 &&
+                            (
+                                /job|career|position|opening|role|apply|details|vacancy|opportunities/i.test(href) ||
+                                /job|career|position|opening|role|vacancy|opportunities/i.test(text)
+                            ) &&
+                            !/login|signup|privacy|term|cookie|blog|about|contact|press|help|faq|support/i.test(href)
                         );
 
-                        // Check keywords
-                        const matchesKeyword = keywords.some(k => 
-                            text.toLowerCase().includes(k.toLowerCase())
-                        );
+                        // Check keywords - case insensitive partial match
+                        const matchesKeyword = keywords.some(k => {
+                            const keyword = k.toLowerCase();
+                            const textLower = text.toLowerCase();
+                            // Split keyword into words for better matching
+                            const words = keyword.split(' ');
+                            return words.every(word => textLower.includes(word));
+                        });
 
                         // Check locations if provided
                         let matchesLocation = true;
@@ -519,34 +579,57 @@ class GeneralWebScraper:
                             });
                         }
                     });
+                    
+                    console.log(`Job-like links found: ${jobs.length}`);
                     return jobs;
                 }""", {"keywords": keywords, "locations": locations})
 
                 logger.info(f"Heuristic scanner found {len(found_links)} potential candidates")
                 
-                # Filter and score
+                if len(found_links) == 0:
+                    # Try alternative approach - look for common job listing patterns
+                    logger.warning("No links found with standard heuristics. Trying alternative selectors...")
+                    
+                    # Get page content for debugging
+                    content_sample = await page.evaluate("""() => {
+                        const body = document.body.innerText;
+                        return body.substring(0, 500);
+                    }""")
+                    logger.info(f"Page content sample: {content_sample[:200]}...")
+                    
+                    # Try to find job cards or listings
+                    job_cards = await page.query_selector_all("div[class*='job'], li[class*='job'], article[class*='job']")
+                    logger.info(f"Found {len(job_cards)} potential job card elements")
+                
+                # Filter and score - make location optional
                 scored_candidates = []
                 for link in found_links:
                     score = 0
-                    if link['matchesKeyword']: score += 2
-                    if link['matchesLocation']: score += 3
+                    if link['matchesKeyword']: score += 3  # Keyword match is most important
+                    if link['matchesLocation']: score += 2  # Location match is a bonus
                     
-                    # If we have locations but this doesn't match, penalize or skip
-                    if locations and not link['matchesLocation']:
-                        score -= 1
-                    
-                    if score > 0:
+                    # Don't exclude jobs that don't match location - just give them lower priority
+                    # Only require keyword match OR job-like appearance
+                    if score > 0 or link.get('matchesKeyword', False):
                         scored_candidates.append((score, link))
 
                 scored_candidates.sort(key=lambda x: x[0], reverse=True)
                 final_candidates = [j[1] for j in scored_candidates[:limit]]
                 
+                logger.info(f"After filtering: {len(final_candidates)} candidates selected for detail scraping")
+                
+                if len(final_candidates) == 0:
+                    logger.error(f"No job candidates found matching criteria. Keywords: {keywords}, Locations: {locations}")
+                    await browser.close()
+                    return []
+                
                 # Fetch details for found candidates
                 scraped_jobs = []
-                for candidate in final_candidates:
+                for idx, candidate in enumerate(final_candidates):
                     try:
+                        logger.info(f"Scraping detail {idx+1}/{len(final_candidates)}: {candidate['url']}")
                         detail_page = await context.new_page()
-                        await detail_page.goto(candidate['url'], wait_until="domcontentloaded", timeout=15000)
+                        await detail_page.goto(candidate['url'], wait_until="domcontentloaded", timeout=20000)
                         
                         description = await detail_page.evaluate("""() => {
                             // Try to find the container with the most text
@@ -566,7 +649,7 @@ class GeneralWebScraper:
                         
                         scraped_jobs.append({
                             "external_id": hashlib.md5(candidate['url'].encode()).hexdigest(),
-                            "title": candidate['title'].split('\\n')[0].strip(),
+                            "title": candidate['title'].split('\\n')[0].strip()[:200],
                             "company": domain,
                             "url": candidate['url'],
                             "source": "custom_url",
@@ -580,7 +663,11 @@ class GeneralWebScraper:
                     except Exception as e:
                         logger.error(f"Failed to scrape detail for {candidate['url']}: {e}")
 
+                logger.info(f"Successfully scraped {len(scraped_jobs)} jobs from {url}")
                 return scraped_jobs
 
+            except Exception as e:
+                logger.error(f"Error during custom URL scraping: {e}")
+                return []
             finally:
                 await browser.close()

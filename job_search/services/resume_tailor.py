@@ -51,7 +51,7 @@ Return JSON with:
 
 
 class ResumeTailor:
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm_client = llm_client
 
     async def tailor(

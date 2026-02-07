@@ -17,7 +17,8 @@
                 </div>
                 {% if job.match_score is not none %}
                 <div class="text-center">
-                    <div class="text-3xl font-bold {% if job.match_score >= 75 %}score-high{% elif job.match_score >= 50 %}score-mid{% else %}score-low{% endif %}">
+                    <div
+                        class="text-3xl font-bold {% if job.match_score >= 75 %}score-high{% elif job.match_score >= 50 %}score-mid{% else %}score-low{% endif %}">
                         {{ "%.0f"|format(job.match_score) }}%
                     </div>
                     <div class="text-xs text-gray-500">Match</div>
@@ -33,7 +34,8 @@
                 <span class="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ job.work_type }}</span>
                 {% endif %}
                 {% if job.employment_type %}
-                <span class="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ job.employment_type }}</span>
+                <span class="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ job.employment_type
+                    }}</span>
                 {% endif %}
                 {% if job.salary_min and job.salary_max %}
                 <span class="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800">
@@ -66,18 +68,24 @@
                 <p class="text-xs text-gray-500 mt-1">Applied {{ application.applied_at.strftime('%b %d, %Y') }}</p>
                 {% endif %}
             </div>
+            {% if application.automation_log %}
+            <button onclick="showAutomationLog()"
+                class="w-full mb-3 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-200">
+                📋 View Automation Log
+            </button>
+            {% endif %}
             {% else %}
             <button onclick="applyToJob({{ job.id }})"
-                    class="w-full mb-3 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+                class="w-full mb-3 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
                 Apply Now
             </button>
             {% endif %}
             <button onclick="scoreJob({{ job.id }})"
-                    class="w-full mb-3 px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+                class="w-full mb-3 px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
                 Re-score Match
             </button>
             <a href="{{ job.url }}" target="_blank"
-               class="block w-full text-center px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+                class="block w-full text-center px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
                 View on LinkedIn
             </a>
         </div>
@@ -87,7 +95,8 @@
         <div class="bg-white rounded-lg shadow p-6">
             <h3 class="font-semibold text-gray-900 mb-4">Match Breakdown</h3>
             <div class="space-y-3">
-                {% for dim, label in [("skill_score", "Skills"), ("title_score", "Title"), ("experience_score", "Experience"), ("location_score", "Location"), ("keyword_score", "Keywords")] %}
+                {% for dim, label in [("skill_score", "Skills"), ("title_score", "Title"), ("experience_score",
+                "Experience"), ("location_score", "Location"), ("keyword_score", "Keywords")] %}
                 {% set score = job.match_details.get(dim, 0) %}
                 <div>
                     <div class="flex justify-between text-sm mb-1">
@@ -96,7 +105,7 @@
                     </div>
                     <div class="w-full bg-gray-200 rounded-full h-2">
                         <div class="h-2 rounded-full {% if score >= 75 %}bg-green-500{% elif score >= 50 %}bg-yellow-500{% else %}bg-red-500{% endif %}"
-                             style="width: {{ score }}%"></div>
+                            style="width: {{ score }}%"></div>
                     </div>
                 </div>
                 {% endfor %}
@@ -129,39 +138,85 @@
 </div>
 {% endblock %}
 
+<!-- Automation Log Modal -->
+<div id="logModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] flex flex-col">
+        <div class="flex justify-between items-center p-6 border-b">
+            <h3 class="text-lg font-semibold text-gray-900">Automation Log</h3>
+            <button onclick="hideAutomationLog()" class="text-gray-400 hover:text-gray-600">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                    </path>
+                </svg>
+            </button>
+        </div>
+        <div class="p-6 overflow-y-auto flex-1">
+            <pre id="logContent"
+                class="text-sm font-mono bg-gray-50 p-4 rounded whitespace-pre-wrap">{{ application.automation_log if application and application.automation_log else 'No logs available.' }}</pre>
+        </div>
+    </div>
+</div>
+
 {% block scripts %}
 <script>
-async function applyToJob(jobId) {
-    if (!confirm('Queue this job for application?')) return;
-    const res = await fetch('/api/applications', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({job_id: jobId, auto_tailor: true})
-    });
-    if (res.ok) {
-        location.reload();
-    } else {
-        const data = await res.json();
-        alert(data.detail || 'Failed to create application');
-    }
-}
+    const APPLICATION_STATUS = '{{ application.status.value if application else "" }}';
+    const JOB_ID = {{ job.id }};
 
-async function scoreJob(jobId) {
-    const btn = event.target;
-    btn.textContent = 'Scoring...';
-    btn.disabled = true;
-    const res = await fetch(`/api/jobs/${jobId}/score`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({deep: false})
-    });
-    if (res.ok) {
-        location.reload();
-    } else {
-        btn.textContent = 'Re-score Match';
-        btn.disabled = false;
-        alert('Failed to score job');
+    // Auto-refresh if automation is in progress
+    if (APPLICATION_STATUS === 'in_progress') {
+        setInterval(() => {
+            fetch(`/api/applications?job_id=${JOB_ID}`)
+                .then(r => r.json())
+                .then(apps => {
+                    if (apps.length > 0 && apps[0].automation_log) {
+                        document.getElementById('logContent').textContent = apps[0].automation_log;
+                        if (apps[0].status !== 'in_progress') {
+                            location.reload();
+                        }
+                    }
+                });
+        }, 3000); // Refresh every 3 seconds
     }
-}
+
+    function showAutomationLog() {
+        document.getElementById('logModal').classList.remove('hidden');
+    }
+
+    function hideAutomationLog() {
+        document.getElementById('logModal').classList.add('hidden');
+    }
+
+    async function applyToJob(jobId) {
+        if (!confirm('Queue this job for application?')) return;
+        const res = await fetch('/api/applications', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id: jobId, auto_tailor: true })
+        });
+        if (res.ok) {
+            location.reload();
+        } else {
+            const data = await res.json();
+            alert(data.detail || 'Failed to create application');
+        }
+    }
+
+    async function scoreJob(jobId) {
+        const btn = event.target;
+        btn.textContent = 'Scoring...';
+        btn.disabled = true;
+        const res = await fetch(`/api/jobs/${jobId}/score`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deep: false })
+        });
+        if (res.ok) {
+            location.reload();
+        } else {
+            btn.textContent = 'Re-score Match';
+            btn.disabled = false;
+            alert('Failed to score job');
+        }
+    }
 </script>
 {% endblock %}

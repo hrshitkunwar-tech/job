@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
 
@@ -21,6 +21,7 @@ router = APIRouter()
 @router.get("", response_model=list[ApplicationResponse])
 def list_applications(
     status: Optional[str] = None,
+    job_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -28,6 +29,8 @@ def list_applications(
     query = db.query(Application)
     if status:
         query = query.filter(Application.status == status)
+    if job_id:
+        query = query.filter(Application.job_id == job_id)
     query = query.order_by(Application.created_at.desc())
     return query.offset((page - 1) * per_page).limit(per_page).all()
 
@@ -105,3 +108,17 @@ def batch_apply(request: BatchApplyRequest, db: Session = Depends(get_db)):
 
     db.commit()
     return {"created": len(created), "skipped": len(skipped), "job_ids": created}
+
+
+@router.post("/{app_id}/automate")
+async def automate_application(app_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Launch the automated application process for a queued application."""
+    from job_search.services.applier import JobApplier
+    
+    app = db.query(Application).filter(Application.id == app_id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    applier = JobApplier()
+    background_tasks.add_task(applier.run_automation, app_id)
+    return {"message": "Automation started", "application_id": app_id}

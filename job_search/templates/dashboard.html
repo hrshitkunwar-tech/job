@@ -38,7 +38,8 @@
             {% include "partials/job_card.html" %}
             {% else %}
             <div class="bg-white rounded-lg shadow p-6 text-center text-gray-500">
-                No jobs found yet. <a href="/search" class="text-indigo-600 hover:underline">Run a search</a> to get started.
+                No jobs found yet. <a href="/search" class="text-indigo-600 hover:underline">Run a search</a> to get
+                started.
             </div>
             {% endfor %}
         </div>
@@ -58,9 +59,18 @@
                         <p class="font-medium text-gray-900">{{ app.job.title if app.job else "Unknown" }}</p>
                         <p class="text-sm text-gray-500">{{ app.job.company if app.job else "" }}</p>
                     </div>
-                    <span class="px-2 py-1 rounded text-xs font-medium status-{{ app.status.value if app.status else 'queued' }}">
-                        {{ app.status.value if app.status else "queued" }}
-                    </span>
+                    <div class="flex items-center gap-3">
+                        {% if app.status.value == "queued" %}
+                        <button onclick="runAutomation({{ app.id }})"
+                            class="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded border border-indigo-100 hover:bg-indigo-100">
+                            Auto-Apply
+                        </button>
+                        {% endif %}
+                        <span
+                            class="px-2 py-1 rounded text-xs font-medium status-{{ app.status.value if app.status else 'queued' }}">
+                            {{ app.status.value if app.status else "queued" }}
+                        </span>
+                    </div>
                 </div>
             </div>
             {% else %}
@@ -72,12 +82,41 @@
     </div>
 </div>
 
+{% block scripts %}
+<script>
+    async function runAutomation(appId) {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = 'Launching...';
+
+        try {
+            const res = await fetch(`/api/applications/${appId}/automate`, {
+                method: 'POST'
+            });
+            if (res.ok) {
+                btn.textContent = 'In Progress';
+                setTimeout(() => location.reload(), 2000);
+            } else {
+                alert('Failed to start automation');
+                btn.disabled = false;
+                btn.textContent = 'Auto-Apply';
+            }
+        } catch (e) {
+            alert('Error connecting to server');
+            btn.disabled = false;
+        }
+    }
+</script>
+{% endblock %}
+
 <!-- Quick Actions -->
 <div class="mt-8 flex gap-4">
-    <a href="/search" class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+    <a href="/search"
+        class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
         Run New Search
     </a>
-    <a href="/resumes" class="inline-flex items-center px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+    <a href="/resumes"
+        class="inline-flex items-center px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
         Upload Resume
     </a>
 </div>
