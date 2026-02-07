@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Request
+from datetime import datetime
+from typing import Optional
+from sqlalchemy import or_
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
@@ -53,16 +56,36 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/jobs")
-def jobs_page(request: Request, db: Session = Depends(get_db)):
-    jobs = (
-        db.query(Job)
-        .filter(Job.is_archived == False)
-        .order_by(Job.match_score.desc().nullslast())
-        .all()
-    )
+def jobs_page(
+    request: Request, 
+    q: Optional[str] = None, 
+    scraped_after: Optional[str] = None,
+    search_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(Job).filter(Job.is_archived == False)
+
+    if search_id:
+        query = query.filter(Job.search_query_id == search_id)
+
+    if q:
+        search_term = f"%{q}%"
+        query = query.filter(or_(Job.title.ilike(search_term), Job.company.ilike(search_term)))
+
+    if scraped_after:
+        try:
+            # Handle potentially URL-encoded or timezone-aware ISO strings
+            dt = datetime.fromisoformat(scraped_after.replace("Z", "+00:00"))
+            query = query.filter(Job.scraped_at >= dt)
+        except Exception:
+            pass
+
+    jobs = query.order_by(Job.match_score.desc().nullslast()).all()
+    
     return templates.TemplateResponse("jobs.html", {
         "request": request,
         "jobs": jobs,
+        "q": q or ""
     })
 
 

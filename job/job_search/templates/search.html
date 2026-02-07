@@ -192,24 +192,55 @@
     </div>
     <div class="space-y-3">
         {% for query in queries %}
-        <div class="bg-white rounded-lg shadow p-4 flex justify-between items-center">
-            <div>
-                <h3 class="font-medium text-gray-900">{{ query.name }}</h3>
-                <p class="text-sm text-gray-500">
-                    {{ query.keywords }}
-                    {% if query.location %} &middot; {{ query.location }}{% endif %}
-                    {% if query.work_type %} &middot; {{ query.work_type }}{% endif %}
-                </p>
-                <p class="text-xs text-gray-400">
-                    {{ query.results_count }} results
-                    {% if query.last_run_at %} &middot; Last run: {{ query.last_run_at.strftime('%b %d') }}{% endif %}
-                </p>
+        <div class="bg-white rounded-lg shadow p-4 cursor-pointer hover:bg-gray-50 transition-colors border border-gray-100"
+            onclick="toggleSearchDetails('{{ query.id }}')">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="font-medium text-gray-900 flex items-center gap-2">
+                        {{ query.name }}
+                        <span class="text-xs font-normal text-gray-400 bg-gray-100 px-2 rounded-full">ID: {{ query.id
+                            }}</span>
+                    </h3>
+                    <p class="text-sm text-gray-500 mt-1">
+                        {{ query.keywords }}
+                        {% if query.location %} &middot; {{ query.location }}{% endif %}
+                    </p>
+                </div>
+                <div class="flex gap-2" onclick="event.stopPropagation()">
+                    <button onclick="runSavedSearch({{ query.id }})"
+                        class="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded hover:bg-indigo-700">Run</button>
+                    <button onclick="deleteSearch({{ query.id }})"
+                        class="px-3 py-1 text-xs font-medium bg-white text-red-600 border border-red-200 rounded hover:bg-red-50">Delete</button>
+                </div>
             </div>
-            <div class="flex gap-2">
-                <button onclick="runSavedSearch({{ query.id }})"
-                    class="px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">Run</button>
-                <button onclick="deleteSearch({{ query.id }})"
-                    class="px-3 py-1 text-sm bg-red-50 text-red-600 rounded hover:bg-red-100">Delete</button>
+
+            <!-- Hidden Details -->
+            <div id="details-{{ query.id }}"
+                class="hidden mt-3 pt-3 border-t border-gray-100 text-xs text-gray-600 grid grid-cols-2 gap-y-2 gap-x-4">
+                <div class="col-span-2">
+                    <span class="font-semibold text-gray-700">Location:</span> {{ query.location or query.locations or
+                    "Global" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Work Type:</span> {{ query.work_type or query.work_types
+                    or "Any" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Experience:</span> {{ query.experience_levels or "Any" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Date Posted:</span> {{ query.date_posted or "Any time" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Easy Apply:</span> {{ "Yes" if query.easy_apply_only else
+                    "No" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Results:</span> {{ query.results_count }}
+                </div>
+                <div class="col-span-2 text-gray-400 mt-1">
+                    Last run: {{ query.last_run_at.strftime('%Y-%m-%d %H:%M') if query.last_run_at else 'Never' }}
+                </div>
             </div>
         </div>
         {% else %}
@@ -224,7 +255,17 @@
 {% block scripts %}
 <script>
     // Location tags management
+    // Location tags management
+    function toggleSearchDetails(id) {
+        const el = document.getElementById(`details-${id}`);
+        if (el) {
+            el.classList.toggle('hidden');
+        }
+    }
+
     let currentSearchId = null;
+    let currentDbSearchId = null;
+    let searchStartTime = null;
     const locations = [];
     const locationInput = document.getElementById('location-input');
     const locationContainer = document.getElementById('location-container');
@@ -323,6 +364,8 @@
         if (res.ok) {
             const result = await res.json();
             currentSearchId = result.search_id;
+            currentDbSearchId = result.db_search_id;
+            searchStartTime = new Date().toISOString();
             // Start polling for progress
             startProgressPolling(data.keywords, data.limit);
         } else {
@@ -345,9 +388,9 @@
 
             try {
                 // Fetch current job count
-                const response = await fetch('/api/jobs?limit=1000');
-                const jobs = await response.json();
-                const currentCount = jobs.length;
+                const response = await fetch('/api/jobs?per_page=1');
+                const data = await response.json();
+                const currentCount = data.total;
 
                 // Update UI
                 document.getElementById('jobs-found-count').textContent = `${currentCount} jobs found`;
@@ -355,6 +398,13 @@
                 // Update progress bar (estimate based on target)
                 const progress = Math.min((currentCount / targetLimit) * 100, 95);
                 document.getElementById('progress-bar').style.width = `${progress}%`;
+
+                // Check if target reached
+                if (currentCount >= targetLimit && currentCount > 0) {
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount, keywords);
+                    return;
+                }
 
                 // Check if new jobs were found
                 if (currentCount > lastJobCount) {
@@ -364,13 +414,13 @@
                 } else if (pollCount > 24) {
                     // No new jobs for 2 minutes (24 polls × 5 seconds), assume complete
                     clearInterval(progressInterval);
-                    showCompletion(currentCount);
+                    showCompletion(currentCount, keywords);
                 }
 
                 // Stop after max time (10 minutes)
                 if (pollCount >= maxPolls) {
                     clearInterval(progressInterval);
-                    showCompletion(currentCount);
+                    showCompletion(currentCount, keywords);
                 }
             } catch (error) {
                 console.error('Progress polling error:', error);
@@ -378,7 +428,7 @@
         }, 5000); // Poll every 5 seconds
     }
 
-    function showCompletion(jobCount) {
+    function showCompletion(jobCount, keywords) {
         const progressDiv = document.getElementById('search-progress');
         const progressBar = document.getElementById('progress-bar');
 
@@ -394,7 +444,20 @@
         const completionDiv = document.getElementById('completion-notification');
         const completionMessage = document.getElementById('completion-message');
 
-        completionMessage.innerHTML = `Found ${jobCount} jobs. <a href="/jobs" class="underline font-medium">View all jobs →</a>`;
+        // Use ID if available (most robust), fallback to date logic
+        let url = `/jobs?`;
+        if (currentDbSearchId) {
+            // Only filter by Session ID to show exactly what was scraped
+            url += `search_id=${currentDbSearchId}`;
+        } else {
+            // Fallback for untracked searches
+            url += `q=${encodeURIComponent(keywords || '')}`;
+            if (searchStartTime) {
+                url += `&scraped_after=${encodeURIComponent(searchStartTime)}`;
+            }
+        }
+
+        completionMessage.innerHTML = `Found ${jobCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
         completionDiv.classList.remove('hidden');
 
         // Auto-dismiss after 30 seconds (increased from 10)
@@ -541,6 +604,8 @@
             if (res.ok) {
                 const result = await res.json();
                 currentSearchId = result.search_id;
+                currentDbSearchId = result.db_search_id;
+                searchStartTime = new Date().toISOString();
                 // Start polling for progress
                 startProgressPolling(search.keywords, 50);
             } else {
@@ -565,6 +630,37 @@
     }
 
     // Make functions globally accessible
+    // Check for active search on load
+    async function checkActiveSearch() {
+        try {
+            const res = await fetch('/api/search/active');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.active) {
+                    console.log('Found active search:', data);
+                    const progressDiv = document.getElementById('search-progress');
+                    if (progressDiv) {
+                        progressDiv.classList.remove('hidden');
+                        document.getElementById('progress-status').textContent = 'Continuing active search for "' + (data.keywords || 'jobs') + '"...';
+
+                        window.currentSearchId = data.search_id; // UUID
+                        window.currentDbSearchId = data.db_search_id; // INT
+
+                        // Start polling
+                        if (typeof startProgressPolling === 'function') {
+                            startProgressPolling(data.keywords, 50);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Active check failed:', e);
+        }
+    }
+
+    // Call on load
+    document.addEventListener('DOMContentLoaded', checkActiveSearch);
+
     window.runSavedSearch = runSavedSearch;
     window.deleteSearch = deleteSearch;
 </script>

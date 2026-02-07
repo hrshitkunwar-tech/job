@@ -7,6 +7,7 @@ from job_search.schemas.search import SearchQueryCreate, SearchQueryResponse, Se
 
 from datetime import datetime
 import uuid
+import json
 
 router = APIRouter()
 
@@ -57,26 +58,48 @@ async def stop_search(search_id: str):
         raise HTTPException(status_code=404, detail="Search not found or already completed")
 
 @router.post("/run")
-async def run_search(request: SearchRunRequest, background_tasks: BackgroundTasks):
+async def run_search(request: SearchRunRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger a LinkedIn job search. Runs in the background."""
     search_id = str(uuid.uuid4())
     
-    # Track this search
+    # Track this search in memory for cancellation
     active_searches[search_id] = {
         "cancelled": False,
         "started_at": datetime.now()
     }
+
+    # Create a persistent SearchQuery record to link jobs to this specific run
+    try:
+        db_query = SearchQuery(
+            name=f"Run: {request.keywords}"[:50],
+            keywords=request.keywords,
+            locations=json.dumps(request.locations) if request.locations else None,
+            work_types=json.dumps(request.work_types) if request.work_types else None,
+            experience_levels=json.dumps(request.experience_levels) if request.experience_levels else None,
+            date_posted=request.date_posted,
+            easy_apply_only=request.easy_apply_only,
+            results_count=0
+        )
+        db.add(db_query)
+        db.commit()
+        db.refresh(db_query)
+        db_search_id = db_query.id
+    except Exception as e:
+        # Fallback if DB save fails, though unlikely
+        print(f"Failed to save search query: {e}")
+        db_search_id = None
     
-    background_tasks.add_task(_run_search_task, request.model_dump(), search_id)
+    background_tasks.add_task(_run_search_task, request.model_dump(), search_id, db_search_id)
     return {
         "status": "started",
         "message": "Search task queued. Jobs will appear as they are found.",
         "params": request.model_dump(),
         "search_id": search_id,
+        "db_search_id": db_search_id
     }
 
 
-async def _run_search_task(params: dict, search_id: str):
+async def _run_search_task(params: dict, search_id: str, db_search_id: int = None):
     """Background task to run LinkedIn scraping."""
     import logging
     from job_search.database import SessionLocal
@@ -160,6 +183,10 @@ async def _run_search_task(params: dict, search_id: str):
                 # Check if exists
                 existing = db.query(Job).filter(Job.external_id == job_data.get("external_id")).first()
                 if existing:
+                    # Update the search_query_id to the current one so it appears in this search's results
+                    if db_search_id:
+                        existing.search_query_id = db_search_id
+                        db.commit()
                     continue
 
                 # Score job
@@ -184,7 +211,7 @@ async def _run_search_task(params: dict, search_id: str):
                         "matched_skills": match_result.matched_skills,
                         "missing_skills": match_result.missing_skills
                     },
-                    search_query_id=params.get("id")
+                    search_query_id=db_search_id
                 )
                 db.add(job)
                 db.commit()
@@ -200,3 +227,15 @@ async def _run_search_task(params: dict, search_id: str):
         if search_id in active_searches:
             del active_searches[search_id]
         db.close()
+
+@router.get("/active")
+def get_active_search():
+    if not active_searches:
+        return {"active": False}
+    search_id, data = next(iter(active_searches.items()))
+    return {
+        "active": True,
+        "search_id": search_id,
+        "db_search_id": data.get("db_search_id"),
+        "keywords": data.get("params", {}).get("keywords") or data.get("keywords")
+    }

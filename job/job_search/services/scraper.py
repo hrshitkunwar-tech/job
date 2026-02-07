@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -74,7 +75,16 @@ class LinkedInScraper:
                     logger.error("Scraper stuck at Security Checkpoint. Please solve the puzzle in the browser window!")
                     # Wait for manual intervention if headless=False
                     if not self.headless:
-                        await asyncio.sleep(60)
+                        # Poll for resolution
+                        logger.info("Waiting for manual CAPTCHA resolution (120s timeout)...")
+                        for _ in range(60): # 60 * 2s = 120s
+                            if "checkpoint" not in page.url:
+                                logger.info("Checkpoint passed! Saving session state immediately.")
+                                # Ensure directory exists
+                                self.storage_state.parent.mkdir(parents=True, exist_ok=True)
+                                await context.storage_state(path=str(self.storage_state))
+                                break
+                            await asyncio.sleep(2)
                     else:
                         return []
 
@@ -89,15 +99,21 @@ class LinkedInScraper:
                 
                 # Full description extraction
                 detailed_jobs = []
-                for job in jobs:
-                    try:
-                        detail = await self._get_job_details(context, job["url"])
-                        job.update(detail)
-                        detailed_jobs.append(job)
-                        await self._get_random_delay(1, 3) # Inter-job delay
-                    except Exception as e:
-                        logger.error(f"Failed to get details for {job['url']}: {e}")
-                        detailed_jobs.append(job) # Keep what we have
+                sem = asyncio.Semaphore(3) # Limit concurrency to avoid blocking
+
+                async def fetch_detail_with_sem(job):
+                    async with sem:
+                        try:
+                            # Add random small delay to jitter
+                            await self._get_random_delay(0.5, 1.5)
+                            detail = await self._get_job_details(context, job["url"])
+                            job.update(detail)
+                        except Exception as e:
+                            logger.error(f"Failed to get details for {job['url']}: {e}")
+                        return job
+
+                # Execute in parallel
+                detailed_jobs = await asyncio.gather(*[fetch_detail_with_sem(job) for job in jobs])
 
                 return detailed_jobs
 
@@ -241,7 +257,7 @@ class LinkedInScraper:
     async def _get_job_details(self, context: BrowserContext, url: str) -> Dict[str, Any]:
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
             
             # Try multiple selectors for job description
             desc_selectors = [
