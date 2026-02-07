@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Job Search{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-gray-500 mt-1">Your job search overview</p>
+</div>
+
+<!-- Stats -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-lg shadow p-6">
+        <dt class="text-sm font-medium text-gray-500">Jobs Found</dt>
+        <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ total_jobs }}</dd>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <dt class="text-sm font-medium text-gray-500">Applications Sent</dt>
+        <dd class="mt-1 text-3xl font-semibold text-indigo-600">{{ total_applied }}</dd>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <dt class="text-sm font-medium text-gray-500">Interviews</dt>
+        <dd class="mt-1 text-3xl font-semibold text-green-600">{{ total_interviews }}</dd>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <dt class="text-sm font-medium text-gray-500">Success Rate</dt>
+        <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ success_rate }}%</dd>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+    <!-- Recent Job Matches -->
+    <div>
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Top Job Matches</h2>
+            <a href="/jobs" class="text-sm text-indigo-600 hover:text-indigo-800">View all</a>
+        </div>
+        <div class="space-y-3">
+            {% for job in recent_jobs %}
+            {% include "partials/job_card.html" %}
+            {% else %}
+            <div class="bg-white rounded-lg shadow p-6 text-center text-gray-500">
+                No jobs found yet. <a href="/search" class="text-indigo-600 hover:underline">Run a search</a> to get started.
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Recent Applications -->
+    <div>
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Recent Applications</h2>
+            <a href="/applications" class="text-sm text-indigo-600 hover:text-indigo-800">View all</a>
+        </div>
+        <div class="space-y-3">
+            {% for app in recent_apps %}
+            <div class="bg-white rounded-lg shadow p-4">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="font-medium text-gray-900">{{ app.job.title if app.job else "Unknown" }}</p>
+                        <p class="text-sm text-gray-500">{{ app.job.company if app.job else "" }}</p>
+                    </div>
+                    <span class="px-2 py-1 rounded text-xs font-medium status-{{ app.status.value if app.status else 'queued' }}">
+                        {{ app.status.value if app.status else "queued" }}
+                    </span>
+                </div>
+            </div>
+            {% else %}
+            <div class="bg-white rounded-lg shadow p-6 text-center text-gray-500">
+                No applications yet. Find a job and apply!
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="mt-8 flex gap-4">
+    <a href="/search" class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+        Run New Search
+    </a>
+    <a href="/resumes" class="inline-flex items-center px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+        Upload Resume
+    </a>
+</div>
+{% endblock %}

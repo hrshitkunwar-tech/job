@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Applications - Job Search{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Applications</h1>
+
+<!-- Status Filters -->
+<div class="flex gap-2 mb-6">
+    <button onclick="filterByStatus('')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn active">All</button>
+    <button onclick="filterByStatus('queued')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Queued</button>
+    <button onclick="filterByStatus('submitted')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Submitted</button>
+    <button onclick="filterByStatus('interview')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Interview</button>
+    <button onclick="filterByStatus('rejected')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Rejected</button>
+    <button onclick="filterByStatus('offer')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Offer</button>
+</div>
+
+<!-- Applications Table -->
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Company</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Score</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+            {% for app in applications %}
+            <tr class="app-row hover:bg-gray-50" data-status="{{ app.status.value if app.status else 'queued' }}">
+                <td class="px-6 py-4 text-sm text-gray-900">{{ app.job.company if app.job else "—" }}</td>
+                <td class="px-6 py-4 text-sm">
+                    {% if app.job %}
+                    <a href="/jobs/{{ app.job.id }}" class="text-indigo-600 hover:underline">{{ app.job.title }}</a>
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    <select onchange="updateStatus({{ app.id }}, this.value)"
+                            class="text-xs rounded-full px-2 py-1 border-0 status-{{ app.status.value if app.status else 'queued' }}">
+                        {% for s in ["queued", "submitted", "interview", "rejected", "offer", "withdrawn"] %}
+                        <option value="{{ s }}" {% if app.status and app.status.value == s %}selected{% endif %}>{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td class="px-6 py-4 text-sm">
+                    {% if app.job and app.job.match_score is not none %}
+                    <span class="{% if app.job.match_score >= 75 %}score-high{% elif app.job.match_score >= 50 %}score-mid{% else %}score-low{% endif %}">
+                        {{ "%.0f"|format(app.job.match_score) }}%
+                    </span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4 text-sm text-gray-500">
+                    {{ app.created_at.strftime('%b %d') if app.created_at else "—" }}
+                </td>
+                <td class="px-6 py-4 text-sm">
+                    {% if app.job %}
+                    <a href="/jobs/{{ app.job.id }}" class="text-indigo-600 hover:underline">View</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" class="px-6 py-8 text-center text-gray-500">
+                    No applications yet. Go to <a href="/jobs" class="text-indigo-600 hover:underline">Jobs</a> to start applying.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterByStatus(status) {
+    document.querySelectorAll('.app-row').forEach(row => {
+        row.style.display = !status || row.dataset.status === status ? '' : 'none';
+    });
+    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('bg-indigo-200', 'text-indigo-800'));
+    event.target.classList.add('bg-indigo-200', 'text-indigo-800');
+}
+
+async function updateStatus(appId, status) {
+    await fetch(`/api/applications/${appId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: status})
+    });
+}
+</script>
+{% endblock %}

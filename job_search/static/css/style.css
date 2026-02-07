@@ -1,0 +1,21 @@
+/* Custom styles beyond Tailwind */
+
+/* Active nav link styling */
+nav a[href]:hover {
+    color: #4f46e5;
+}
+
+/* Score animations */
+.score-high, .score-mid, .score-low {
+    font-weight: 700;
+}
+
+/* Table row hover */
+tbody tr:hover {
+    background-color: #f9fafb;
+}
+
+/* Smooth transitions */
+.job-card {
+    transition: all 0.2s ease;
+}
