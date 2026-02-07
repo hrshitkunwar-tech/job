@@ -27,13 +27,19 @@
                 <div id="progress-bar" class="bg-indigo-600 h-full transition-all duration-500" style="width: 0%"></div>
             </div>
         </div>
-        <button onclick="dismissProgress()" class="ml-4 text-gray-400 hover:text-gray-600">
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd"
-                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                    clip-rule="evenodd"></path>
-            </svg>
-        </button>
+        <div class="flex gap-2 items-center">
+            <button onclick="stopSearch()"
+                class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 font-medium">
+                Stop Search
+            </button>
+            <button onclick="dismissProgress()" class="text-gray-400 hover:text-gray-600">
+                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd"
+                        d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                        clip-rule="evenodd"></path>
+                </svg>
+            </button>
+        </div>
     </div>
 </div>
 
@@ -218,6 +224,7 @@
 {% block scripts %}
 <script>
     // Location tags management
+    let currentSearchId = null;
     const locations = [];
     const locationInput = document.getElementById('location-input');
     const locationContainer = document.getElementById('location-container');
@@ -314,6 +321,8 @@
         });
 
         if (res.ok) {
+            const result = await res.json();
+            currentSearchId = result.search_id;
             // Start polling for progress
             startProgressPolling(data.keywords, data.limit);
         } else {
@@ -405,6 +414,40 @@
         document.getElementById('completion-notification').classList.add('hidden');
     }
 
+    async function stopSearch() {
+        if (!currentSearchId) {
+            // If no ID but interval running, stop UI
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                document.getElementById('search-progress').classList.add('hidden');
+                return;
+            }
+            alert('No active search to stop');
+            return;
+        }
+
+        try {
+            const res = await fetch(`/api/search/stop/${currentSearchId}`, {
+                method: 'POST'
+            });
+
+            if (res.ok) {
+                if (progressInterval) clearInterval(progressInterval);
+                document.getElementById('search-progress').classList.add('hidden');
+                alert('✓ Search stopped successfully');
+                currentSearchId = null;
+            } else {
+                alert('✗ Failed to stop search');
+            }
+        } catch (error) {
+            console.error('Stop error:', error);
+            // Force UI cleanup anyway
+            if (progressInterval) clearInterval(progressInterval);
+            document.getElementById('search-progress').classList.add('hidden');
+        }
+    }
+
+    window.stopSearch = stopSearch;
     window.dismissProgress = dismissProgress;
     window.dismissCompletion = dismissCompletion;
 
@@ -496,6 +539,8 @@
             });
 
             if (res.ok) {
+                const result = await res.json();
+                currentSearchId = result.search_id;
                 // Start polling for progress
                 startProgressPolling(search.keywords, 50);
             } else {

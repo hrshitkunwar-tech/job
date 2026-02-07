@@ -113,6 +113,54 @@ async def score_job(job_id: int, request: JobScoreRequest, db: Session = Depends
     }
 
 
+@router.post("/rescore-all")
+def rescore_all_jobs(db: Session = Depends(get_db)):
+    """Re-score all non-archived jobs against the current profile."""
+    from job_search.models import UserProfile
+    from job_search.services.job_matcher import JobMatcher
+
+    profile = db.query(UserProfile).first()
+    if not profile:
+        raise HTTPException(status_code=400, detail="No profile found.")
+
+    profile_dict = {
+        "skills": profile.skills or [],
+        "experience": profile.experience or [],
+        "target_roles": profile.target_roles or [],
+        "target_locations": profile.target_locations or [],
+    }
+
+    matcher = JobMatcher()
+    jobs = db.query(Job).filter(Job.is_archived == False).all()
+    updated = 0
+
+    for job in jobs:
+        job_dict = {
+            "title": job.title,
+            "description": job.description or "",
+            "location": job.location or "",
+            "work_type": job.work_type or "",
+        }
+        result = matcher.score_job(job_dict, profile_dict)
+        job.match_score = result.overall_score
+        job.match_details = {
+            "skill_score": result.skill_score,
+            "title_score": result.title_score,
+            "experience_score": result.experience_score,
+            "location_score": result.location_score,
+            "keyword_score": result.keyword_score,
+            "matched_skills": result.matched_skills,
+            "missing_skills": result.missing_skills,
+            "recommendation": result.recommendation,
+            "explanation": result.explanation,
+        }
+        job.extracted_keywords = result.extracted_keywords
+        updated += 1
+
+    db.commit()
+    return {"message": f"Re-scored {updated} jobs", "updated": updated}
+
+
 @router.post("/{job_id}/archive")
 def archive_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()

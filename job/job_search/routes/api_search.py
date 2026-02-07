@@ -5,7 +5,13 @@ from job_search.database import get_db
 from job_search.models import SearchQuery
 from job_search.schemas.search import SearchQueryCreate, SearchQueryResponse, SearchRunRequest
 
+from datetime import datetime
+import uuid
+
 router = APIRouter()
+
+# Global dictionary to track running searches
+active_searches = {}
 
 
 @router.get("/queries", response_model=list[SearchQueryResponse])
@@ -40,19 +46,37 @@ def delete_query(query_id: int, db: Session = Depends(get_db)):
     return {"message": "Deleted", "id": query_id}
 
 
+@router.post("/stop/{search_id}")
+async def stop_search(search_id: str):
+    """Stop a running search."""
+    if search_id in active_searches:
+        # Set cancellation flag
+        active_searches[search_id]["cancelled"] = True
+        return {"message": "Search stop requested", "search_id": search_id}
+    else:
+        raise HTTPException(status_code=404, detail="Search not found or already completed")
+
 @router.post("/run")
 async def run_search(request: SearchRunRequest, background_tasks: BackgroundTasks):
     """Trigger a LinkedIn job search. Runs in the background."""
-    # For now, return a placeholder. The actual scraper will be wired in Phase 2.
-    background_tasks.add_task(_run_search_task, request.model_dump())
+    search_id = str(uuid.uuid4())
+    
+    # Track this search
+    active_searches[search_id] = {
+        "cancelled": False,
+        "started_at": datetime.now()
+    }
+    
+    background_tasks.add_task(_run_search_task, request.model_dump(), search_id)
     return {
         "status": "started",
         "message": "Search task queued. Jobs will appear as they are found.",
         "params": request.model_dump(),
+        "search_id": search_id,
     }
 
 
-async def _run_search_task(params: dict):
+async def _run_search_task(params: dict, search_id: str):
     """Background task to run LinkedIn scraping."""
     import logging
     from job_search.database import SessionLocal
@@ -66,6 +90,11 @@ async def _run_search_task(params: dict):
 
     db = SessionLocal()
     try:
+        # Check if cancelled before starting
+        if active_searches.get(search_id, {}).get("cancelled"):
+            logger.info(f"Search {search_id} was cancelled before starting")
+            return
+
         # Load profile for matching
         profile_obj = db.query(UserProfile).first()
         if not profile_obj:
@@ -104,6 +133,11 @@ async def _run_search_task(params: dict):
         all_jobs = []
         for location in locations_list:
             if total_jobs_found >= limit_per_search:
+                break
+                
+            # Check if cancelled during iteration
+            if active_searches.get(search_id, {}).get("cancelled"):
+                logger.info(f"Search {search_id} cancelled during execution")
                 break
 
             logger.info(f"Searching for '{params.get('keywords')}' in '{location}'")
@@ -163,4 +197,6 @@ async def _run_search_task(params: dict):
     except Exception as e:
         logger.exception(f"Search task failed: {e}")
     finally:
+        if search_id in active_searches:
+            del active_searches[search_id]
         db.close()

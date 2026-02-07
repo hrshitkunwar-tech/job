@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # LinkedIn
     linkedin_email: Optional[str] = None
     linkedin_password: Optional[str] = None
-    browser_headless: bool = False
+    browser_headless: bool = True
     scrape_delay_min: float = 2.0
     scrape_delay_max: float = 7.0
     apply_delay_min: float = 30.0
