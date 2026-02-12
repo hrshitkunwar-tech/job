@@ -2,27 +2,148 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
+from html import unescape
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import urllib.parse
 import hashlib
 
+import httpx
 from playwright.async_api import async_playwright, Page, BrowserContext
 
 from job_search.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Stealth script to avoid bot detection — hides the navigator.webdriver flag
-# and patches other fingerprinting vectors that LinkedIn checks.
+# Stealth script to avoid bot detection
 STEALTH_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
 Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
 window.chrome = {runtime: {}};
 """
+
+# Headers that mimic a real browser for HTTP requests
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
+
+
+def _strip_tags(html: str) -> str:
+    """Remove HTML tags and decode entities."""
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = unescape(text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _parse_job_cards_from_html(html: str, limit: int) -> List[Dict[str, Any]]:
+    """
+    Parse LinkedIn public search HTML and extract job listings.
+    LinkedIn's public pages contain .base-card elements with structured job data.
+    """
+    jobs = []
+
+    # Pattern 1: Match individual job card blocks by finding job view links
+    # LinkedIn public pages embed cards like:
+    #   <a ... href="https://www.linkedin.com/jobs/view/NNNN...">
+    # near <h3 class="base-search-card__title">Title</h3>
+    # and  <h4 class="base-search-card__subtitle">Company</h4>
+    # and  <span class="job-search-card__location">Location</span>
+
+    # Split HTML into chunks around each job card
+    card_splits = re.split(r'(?=<div[^>]*class="[^"]*base-card[^"]*base-search-card[^"]*")', html)
+
+    for chunk in card_splits[1:]:  # Skip first chunk (before first card)
+        if len(jobs) >= limit:
+            break
+
+        # Extract URL
+        url_match = re.search(
+            r'href="(https?://[^"]*linkedin\.com/jobs/view/[^"]*)"',
+            chunk
+        )
+        if not url_match:
+            continue
+        raw_url = url_match.group(1)
+        # Clean tracking params
+        url = raw_url.split("?")[0]
+
+        # Extract title
+        title_match = re.search(
+            r'class="base-search-card__title[^"]*"[^>]*>(.*?)</(?:h3|span|a)',
+            chunk, re.DOTALL
+        )
+        title = _strip_tags(title_match.group(1)) if title_match else ""
+
+        # Extract company
+        company_match = re.search(
+            r'class="base-search-card__subtitle[^"]*"[^>]*>(.*?)</(?:h4|span|a)',
+            chunk, re.DOTALL
+        )
+        company = _strip_tags(company_match.group(1)) if company_match else "Unknown"
+
+        # Extract location
+        location_match = re.search(
+            r'class="job-search-card__location[^"]*"[^>]*>(.*?)</(?:span|div)',
+            chunk, re.DOTALL
+        )
+        location = _strip_tags(location_match.group(1)) if location_match else ""
+
+        if not title or not url:
+            continue
+
+        # Extract external ID from URL
+        parts = url.strip("/").split("/")
+        external_id = parts[-1] if parts else "unknown"
+
+        jobs.append({
+            "external_id": external_id,
+            "title": title,
+            "company": company,
+            "url": url,
+            "location": location,
+            "source": "linkedin",
+        })
+
+    # Fallback: if card-based parsing failed, try finding any /jobs/view/ links
+    if not jobs:
+        link_pattern = re.compile(
+            r'href="(https?://[^"]*linkedin\.com/jobs/view/(\d+)[^"]*)"[^>]*>([^<]+)',
+        )
+        seen = set()
+        for match in link_pattern.finditer(html):
+            if len(jobs) >= limit:
+                break
+            raw_url = match.group(1).split("?")[0]
+            external_id = match.group(2)
+            title_text = _strip_tags(match.group(3))
+            if external_id in seen or not title_text or len(title_text) < 3:
+                continue
+            seen.add(external_id)
+            jobs.append({
+                "external_id": external_id,
+                "title": title_text,
+                "company": "Unknown",
+                "url": raw_url,
+                "location": "",
+                "source": "linkedin",
+            })
+
+    return jobs
 
 
 class LinkedInScraper:
@@ -38,16 +159,237 @@ class LinkedInScraper:
         if max_s is None: max_s = settings.scrape_delay_max
         await asyncio.sleep(random.uniform(min_s, max_s))
 
+    def _build_filter_params(self, filters: dict) -> list:
+        """Build LinkedIn URL filter parameters."""
+        filter_params = []
+        if not filters:
+            return filter_params
+
+        # Date Posted
+        date_map = {"past_24h": "r86400", "past_week": "r604800", "past_month": "r2592000"}
+        if filters.get("date_posted") in date_map:
+            filter_params.append(f"f_TPR={date_map[filters['date_posted']]}")
+
+        # Experience Levels (f_E)
+        exp_map = {"internship": "1", "entry": "2", "associate": "3", "mid-senior": "4", "director": "5", "executive": "6"}
+        exp_filters = filters.get("experience_levels") or []
+        exp_codes = [exp_map[e] for e in exp_filters if e in exp_map]
+        if exp_codes:
+            filter_params.append(f"f_E={urllib.parse.quote(','.join(exp_codes))}")
+
+        # Work Types (f_WT)
+        wt_map = {"onsite": "1", "remote": "2", "hybrid": "3"}
+        wt_filters = filters.get("work_types") or []
+        wt_codes = [wt_map[w] for w in wt_filters if w in wt_map]
+        if wt_codes:
+            filter_params.append(f"f_WT={urllib.parse.quote(','.join(wt_codes))}")
+
+        # Easy Apply (f_AL)
+        if filters.get("easy_apply_only"):
+            filter_params.append("f_AL=true")
+
+        return filter_params
+
+    def _build_search_url(self, query: str, location: str, filter_params: list) -> str:
+        """Build LinkedIn job search URL."""
+        safe_query = urllib.parse.quote(query)
+        url = f"{self.base_url}/jobs/search/?keywords={safe_query}"
+        if location:
+            url += f"&location={urllib.parse.quote(location)}"
+        if filter_params:
+            url += "&" + "&".join(filter_params)
+        return url
+
     async def scrape_jobs(self, query: str, location: str = "United States", limit: int = 10, filters: dict = None, check_cancelled: Callable[[], bool] = None) -> List[Dict[str, Any]]:
         """Main entry point to scrape jobs."""
+        filter_params = self._build_filter_params(filters)
+        has_credentials = bool(self.email and self.password)
+        has_saved_session = self.storage_state.exists()
+
+        # Strategy:
+        # 1. If we have credentials or a saved session, try browser-based scraping
+        # 2. Otherwise, use HTTP-based public scraping (no browser needed)
+        # 3. If browser scraping finds nothing, fall back to HTTP
+
+        if has_credentials or has_saved_session:
+            jobs = await self._scrape_with_browser(query, location, limit, filter_params, check_cancelled)
+            if jobs:
+                return jobs
+            logger.warning("Browser-based scraping found 0 jobs. Falling back to HTTP public scraping...")
+
+        # HTTP-based public scraping — works without login, no browser bot detection
+        jobs = await self._scrape_public_http(query, location, limit, filter_params)
+
+        if not jobs:
+            logger.error(
+                f"No jobs found for '{query}' in '{location}' after all methods. "
+                "LinkedIn may be rate-limiting or the query returned no results."
+            )
+            return []
+
+        # Fetch full descriptions via HTTP for each job
+        detailed_jobs = await self._fetch_details_http(jobs, limit)
+        return detailed_jobs
+
+    async def _scrape_public_http(self, query: str, location: str, limit: int, filter_params: list) -> List[Dict[str, Any]]:
+        """
+        Scrape LinkedIn's public job search page via plain HTTP requests.
+        LinkedIn serves SEO-friendly HTML that doesn't require authentication
+        or a real browser. This is the most reliable method for guest access.
+        """
+        search_url = self._build_search_url(query, location, filter_params)
+        logger.info(f"HTTP public scraping: {search_url}")
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+                headers=HTTP_HEADERS,
+            ) as client:
+                # First, visit LinkedIn homepage to establish session cookies
+                # LinkedIn returns 403 without proper cookies
+                try:
+                    await client.get("https://www.linkedin.com/", headers=HTTP_HEADERS)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass  # Not critical if this fails
+
+                resp = await client.get(search_url)
+                logger.info(f"HTTP response: status={resp.status_code}, url={resp.url}, length={len(resp.text)}")
+
+                if resp.status_code == 403:
+                    logger.warning("LinkedIn returned 403. Retrying with alternate headers...")
+                    # Try with minimal headers (some WAFs block Sec-Fetch headers)
+                    alt_headers = {
+                        "User-Agent": HTTP_HEADERS["User-Agent"],
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    }
+                    resp = await client.get(search_url, headers=alt_headers)
+                    logger.info(f"Retry response: status={resp.status_code}")
+
+                if resp.status_code != 200:
+                    logger.error(f"LinkedIn returned HTTP {resp.status_code}")
+                    return []
+
+                html = resp.text
+
+                # Check if we got a real search results page
+                if "base-search-card" not in html and "jobs/view" not in html:
+                    # Might be an auth wall or error page
+                    title_match = re.search(r'<title>(.*?)</title>', html)
+                    page_title = _strip_tags(title_match.group(1)) if title_match else "unknown"
+                    logger.warning(f"Page doesn't contain job cards. Title: '{page_title}'")
+
+                    # Try fetching more results pages
+                    for start in [25, 50]:
+                        paginated_url = search_url + f"&start={start}"
+                        resp2 = await client.get(paginated_url)
+                        if resp2.status_code == 200 and "base-search-card" in resp2.text:
+                            html = resp2.text
+                            break
+                    else:
+                        return []
+
+                jobs = _parse_job_cards_from_html(html, limit)
+                logger.info(f"HTTP scraping found {len(jobs)} jobs")
+                return jobs
+
+        except httpx.TimeoutException:
+            logger.error("HTTP request to LinkedIn timed out")
+            return []
+        except Exception as e:
+            logger.error(f"HTTP scraping failed: {e}")
+            return []
+
+    async def _fetch_details_http(self, jobs: List[Dict], limit: int) -> List[Dict[str, Any]]:
+        """Fetch full job descriptions via HTTP for each job."""
+        detailed = []
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=20.0,
+            headers=HTTP_HEADERS,
+        ) as client:
+            for job in jobs[:limit]:
+                try:
+                    await self._get_random_delay(0.5, 1.5)
+                    resp = await client.get(job["url"])
+                    if resp.status_code != 200:
+                        logger.warning(f"Failed to fetch {job['url']}: HTTP {resp.status_code}")
+                        continue
+
+                    html = resp.text
+
+                    # Extract description
+                    desc_match = re.search(
+                        r'class="show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>',
+                        html, re.DOTALL
+                    )
+                    if not desc_match:
+                        desc_match = re.search(
+                            r'class="description__text[^"]*"[^>]*>(.*?)</section>',
+                            html, re.DOTALL
+                        )
+                    if not desc_match:
+                        # Broader fallback
+                        desc_match = re.search(
+                            r'class="[^"]*description[^"]*"[^>]*>(.*?)</(?:section|div>)',
+                            html, re.DOTALL
+                        )
+
+                    description = _strip_tags(desc_match.group(1)) if desc_match else ""
+                    description_html = desc_match.group(1).strip() if desc_match else ""
+
+                    if not description or len(description) < 50:
+                        logger.warning(f"Short/empty description for {job['url']}")
+                        # Still include the job but with whatever we have
+                        if not description:
+                            description = f"{job['title']} at {job['company']}"
+
+                    # Extract location if not already present
+                    if not job.get("location"):
+                        loc_match = re.search(
+                            r'class="topcard__flavor--bullet"[^>]*>(.*?)</span>',
+                            html, re.DOTALL
+                        )
+                        if loc_match:
+                            job["location"] = _strip_tags(loc_match.group(1))
+
+                    # Detect Easy Apply
+                    is_easy_apply = "Easy Apply" in html
+
+                    # Detect work type
+                    work_type = "onsite"
+                    if re.search(r'(?i)remote', html[:3000]):
+                        work_type = "remote"
+                    elif re.search(r'(?i)hybrid', html[:3000]):
+                        work_type = "hybrid"
+
+                    job.update({
+                        "description": description,
+                        "description_html": description_html,
+                        "work_type": work_type,
+                        "is_easy_apply": is_easy_apply,
+                        "apply_url": None,
+                        "scraped_at": datetime.now(),
+                    })
+                    detailed.append(job)
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch details for {job['url']}: {e}")
+
+        logger.info(f"HTTP detail fetch: {len(detailed)}/{len(jobs)} jobs with descriptions")
+        return detailed
+
+    async def _scrape_with_browser(self, query: str, location: str, limit: int, filter_params: list, check_cancelled) -> List[Dict[str, Any]]:
+        """Browser-based scraping for authenticated users with saved sessions."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
 
-            # Use saved state and random user agent
             user_agents = [
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
             ]
             context_args = {
                 "user_agent": random.choice(user_agents),
@@ -58,8 +400,6 @@ class LinkedInScraper:
 
             context = await browser.new_context(**context_args)
             page = await context.new_page()
-
-            # Inject stealth script to avoid bot detection
             await page.add_init_script(STEALTH_SCRIPT)
 
             try:
@@ -68,105 +408,51 @@ class LinkedInScraper:
                 await self._get_random_delay(1, 2)
                 logged_in = await self._is_logged_in(page)
 
-                if not logged_in:
-                    if self.email and self.password:
-                        await self._login(page)
-                        logged_in = await self._is_logged_in(page)
-                    else:
-                        logger.warning("Not logged in and no credentials provided. Using guest access.")
+                if not logged_in and self.email and self.password:
+                    await self._login(page)
+                    logged_in = await self._is_logged_in(page)
 
-                # Construct Search URL
-                if not query:
-                    logger.warning("Empty search query provided. Skipping search.")
+                if not logged_in:
+                    logger.warning("Browser-based scraping: not logged in. Returning empty to trigger HTTP fallback.")
                     return []
 
-                safe_query = urllib.parse.quote(query)
-                safe_location = urllib.parse.quote(location) if location else ""
-
-                # Build filter params
-                filter_params = []
-                if filters:
-                    # Date Posted
-                    date_map = {"past_24h": "r86400", "past_week": "r604800", "past_month": "r2592000"}
-                    if filters.get("date_posted") in date_map:
-                        filter_params.append(f"f_TPR={date_map[filters['date_posted']]}")
-
-                    # Experience Levels (f_E)
-                    exp_map = {"internship": "1", "entry": "2", "associate": "3", "mid-senior": "4", "director": "5", "executive": "6"}
-                    exp_filters = filters.get("experience_levels") or []
-                    exp_codes = [exp_map[e] for e in exp_filters if e in exp_map]
-                    if exp_codes:
-                        filter_params.append(f"f_E={urllib.parse.quote(','.join(exp_codes))}")
-
-                    # Work Types (f_WT)
-                    wt_map = {"onsite": "1", "remote": "2", "hybrid": "3"}
-                    wt_filters = filters.get("work_types") or []
-                    wt_codes = [wt_map[w] for w in wt_filters if w in wt_map]
-                    if wt_codes:
-                        filter_params.append(f"f_WT={urllib.parse.quote(','.join(wt_codes))}")
-
-                    # Easy Apply (f_AL)
-                    if filters.get("easy_apply_only"):
-                        filter_params.append("f_AL=true")
-
-                search_url = f"{self.base_url}/jobs/search/?keywords={safe_query}"
-                if safe_location:
-                    search_url += f"&location={safe_location}"
-
-                if filter_params:
-                    search_url += "&" + "&".join(filter_params)
-
-                logger.info(f"Navigating to LinkedIn Search: {search_url}")
+                search_url = self._build_search_url(query, location, filter_params)
+                logger.info(f"Browser scraping (authenticated): {search_url}")
                 await page.goto(search_url, wait_until="load", timeout=60000)
                 await self._get_random_delay(3, 5)
 
-                # Verification: Are we on a login, authwall, or checkpoint page?
                 current_url = page.url
                 logger.info(f"Current Page URL: {current_url}")
 
                 if "checkpoint" in current_url:
-                    logger.error("Scraper stuck at Security Checkpoint.")
+                    logger.error("Security Checkpoint encountered.")
                     if not self.headless:
-                        logger.info("Waiting for manual CAPTCHA resolution (120s timeout)...")
+                        logger.info("Waiting for manual CAPTCHA resolution (120s)...")
                         for _ in range(60):
                             if "checkpoint" not in page.url:
-                                logger.info("Checkpoint passed! Saving session state.")
                                 self.storage_state.parent.mkdir(parents=True, exist_ok=True)
                                 await context.storage_state(path=str(self.storage_state))
                                 break
                             await asyncio.sleep(2)
                     else:
-                        logger.warning("In headless mode — cannot solve CAPTCHA. Returning empty.")
                         return []
 
-                # Detect login/authwall redirect — fall back to guest search
                 if any(x in current_url for x in ["/login", "/authwall", "/signup"]):
-                    logger.warning(f"Redirected to auth page: {current_url}. Retrying with guest URL...")
-                    jobs = await self._scrape_guest(page, query, location, limit, filter_params)
-                    return await self._fetch_details_batch(context, jobs, limit, check_cancelled)
+                    logger.warning(f"Redirected to auth: {current_url}")
+                    return []
 
-                # Fallback: If LinkedIn redirected us to the home feed or 'jobs' home without searching
                 if "/search" not in current_url and "keywords" not in current_url:
-                    logger.info("Direct URL search failed to load results. Attempting on-page search...")
                     await self._perform_on_page_search(page, query, location)
                     await self._get_random_delay(4, 6)
 
-                # Basic job extraction
                 jobs = await self._extract_job_list(page, limit)
-
-                # If authenticated search found nothing, try guest fallback
                 if not jobs:
-                    logger.warning(f"Authenticated search found 0 job cards. Page title: '{await page.title()}'. Trying guest fallback...")
-                    jobs = await self._scrape_guest(page, query, location, limit, filter_params)
-
-                if not jobs:
-                    logger.error("No jobs found after all attempts. LinkedIn may be blocking this request.")
                     return []
 
-                return await self._fetch_details_batch(context, jobs, limit, check_cancelled)
+                # Fetch details with browser
+                return await self._fetch_details_browser(context, jobs, limit, check_cancelled)
 
             finally:
-                # Save state for next time
                 self.storage_state.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     await context.storage_state(path=str(self.storage_state))
@@ -174,52 +460,11 @@ class LinkedInScraper:
                     pass
                 await browser.close()
 
-    async def _scrape_guest(self, page: Page, query: str, location: str, limit: int, filter_params: list) -> List[Dict[str, Any]]:
-        """
-        Fallback: scrape LinkedIn's public/guest job search page.
-        This page renders differently (uses .base-card selectors) and
-        doesn't require authentication.
-        """
-        safe_query = urllib.parse.quote(query)
-        safe_location = urllib.parse.quote(location) if location else ""
-
-        guest_url = f"{self.base_url}/jobs/search/?keywords={safe_query}"
-        if safe_location:
-            guest_url += f"&location={safe_location}"
-        if filter_params:
-            guest_url += "&" + "&".join(filter_params)
-
-        logger.info(f"Guest fallback: navigating to {guest_url}")
-        try:
-            await page.goto(guest_url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            # networkidle can timeout on heavy pages — try domcontentloaded
-            await page.goto(guest_url, wait_until="domcontentloaded", timeout=30000)
-
-        # Wait for dynamic content to render
-        await asyncio.sleep(5)
-
-        # Scroll to trigger lazy loading
-        for _ in range(3):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(1.5)
-
-        current_url = page.url
-        page_title = await page.title()
-        logger.info(f"Guest page loaded: title='{page_title}', url={current_url}")
-
-        # If we still got redirected to auth, we're blocked
-        if any(x in current_url for x in ["/login", "/authwall", "/signup"]):
-            logger.error("Guest access also redirected to auth. LinkedIn is blocking this IP/browser.")
-            return []
-
-        return await self._extract_job_list(page, limit)
-
-    async def _fetch_details_batch(self, context: BrowserContext, jobs: list, limit: int, check_cancelled) -> List[Dict[str, Any]]:
-        """Fetch full job details for a list of scraped job stubs."""
+    async def _fetch_details_browser(self, context: BrowserContext, jobs: list, limit: int, check_cancelled) -> List[Dict[str, Any]]:
+        """Fetch full job details using browser context."""
         sem = asyncio.Semaphore(3)
 
-        async def fetch_detail_with_sem(job):
+        async def fetch_one(job):
             if check_cancelled and check_cancelled():
                 return job
             async with sem:
@@ -231,14 +476,11 @@ class LinkedInScraper:
                     logger.error(f"Failed to get details for {job['url']}: {e}")
                 return job
 
-        logger.info(f"Fetching details for {len(jobs)} jobs...")
-        tasks = [fetch_detail_with_sem(job) for job in jobs[:limit]]
-        detailed_jobs = await asyncio.gather(*tasks)
-
-        # Filter out jobs that failed completely
-        final_jobs = [j for j in detailed_jobs if j.get("description")]
-        logger.info(f"Successfully scraped {len(final_jobs)} jobs with full details.")
-        return final_jobs
+        tasks = [fetch_one(job) for job in jobs[:limit]]
+        detailed = await asyncio.gather(*tasks)
+        final = [j for j in detailed if j.get("description")]
+        logger.info(f"Browser detail fetch: {len(final)} jobs with descriptions")
+        return final
 
     async def _is_logged_in(self, page: Page) -> bool:
         url = page.url
@@ -251,9 +493,9 @@ class LinkedInScraper:
         """Use the LinkedIn search bar directly on the page."""
         try:
             kw_selectors = [
-                 "input[aria-label='Search by title, skill, or company']",
-                 ".jobs-search-box__text-input[aria-label='Search by title, skill, or company']",
-                 "input[name='keywords']"
+                "input[aria-label='Search by title, skill, or company']",
+                ".jobs-search-box__text-input[aria-label='Search by title, skill, or company']",
+                "input[name='keywords']"
             ]
             loc_selectors = [
                 "input[aria-label='City, state, or zip code']",
@@ -307,130 +549,95 @@ class LinkedInScraper:
             logger.info("Login successful")
         except Exception as e:
             logger.error(f"Login failed: {e}")
-            logger.warning("Continuing without login - results may be limited")
+            logger.warning("Continuing without login")
             return
 
         if "checkpoint" in page.url:
-            logger.warning("Security checkpoint encountered. Manual intervention might be needed.")
+            logger.warning("Security checkpoint encountered.")
             await asyncio.sleep(30)
 
     async def _extract_job_list(self, page: Page, limit: int) -> List[Dict[str, Any]]:
         jobs = []
 
-        # Scroll to load more jobs
         for _ in range(3):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
 
-        # Target the main search results list — try both logged-in and guest selectors
         selectors = [
             "li.jobs-search-results__list-item",
             ".scaffold-layout__list-item",
             ".job-card-container",
-            ".base-card.base-card--link",          # Guest page job card
-            "li.result-card",                       # Older guest layout
+            ".base-card.base-card--link",
+            "li.result-card",
             ".base-card",
             "div[data-job-id]",
             "li[data-occludable-job-id]",
-            ".jobs-search-results-list li",         # Generic list item
-            "ul.jobs-search__results-list > li",    # Guest page list items
+            "ul.jobs-search__results-list > li",
         ]
 
         job_cards = []
         for selector in selectors:
             job_cards = await page.query_selector_all(selector)
             if job_cards:
-                logger.info(f"Found {len(job_cards)} job cards using selector: {selector}")
+                logger.info(f"Found {len(job_cards)} cards with: {selector}")
                 break
 
         if not job_cards:
-            logger.warning("No job cards found with any known selectors.")
-            # Last ditch effort: any link that looks like a job link
             all_links = await page.query_selector_all("a[href*='/jobs/view/']")
-            logger.info(f"Found {len(all_links)} potential job view links in last-ditch effort")
             if all_links:
-                unique_links = []
-                seen_urls = set()
+                unique, seen = [], set()
                 for link in all_links:
                     url = await link.get_attribute("href")
                     if url and "/jobs/view/" in url:
-                        clean_url = url.split("?")[0]
-                        if clean_url not in seen_urls:
-                            seen_urls.add(clean_url)
-                            unique_links.append(link)
-                job_cards = unique_links
-
-            if not job_cards:
-                # Log page state for debugging
-                page_title = await page.title()
-                body_text = await page.evaluate("() => document.body?.innerText?.substring(0, 300) || ''")
-                logger.warning(f"Page title: '{page_title}', body preview: '{body_text[:200]}'")
+                        clean = url.split("?")[0]
+                        if clean not in seen:
+                            seen.add(clean)
+                            unique.append(link)
+                job_cards = unique
 
         for card in job_cards[:limit]:
             try:
-                # Robust multi-selector approach for job cards
-                title_selectors = [
-                    ".job-card-list__title",
-                    ".base-search-card__title",
-                    "h3.base-search-card__title",
-                    ".job-card-container__link",
-                    "a.job-card-list__title",
-                    "h3",  # Generic fallback within card
-                ]
-                company_selectors = [
-                    ".job-card-container__company-name",
-                    ".base-search-card__subtitle",
-                    "h4.base-search-card__subtitle",
-                    ".job-card-container__primary-description",
-                    "h4",  # Generic fallback within card
-                ]
-                link_selectors = [
-                    "a.job-card-list__title",
-                    "a.base-card__full-link",
-                    "a.base-search-card__full-link",
-                    "a.job-card-container__link",
-                    ".base-search-card__title-link",
-                    "a[href*='/jobs/view/']",  # Generic job link
-                ]
+                title_selectors = [".job-card-list__title", ".base-search-card__title", "h3.base-search-card__title", "h3", ".job-card-container__link"]
+                company_selectors = [".job-card-container__company-name", ".base-search-card__subtitle", "h4.base-search-card__subtitle", "h4"]
+                link_selectors = ["a.job-card-list__title", "a.base-card__full-link", "a.base-search-card__full-link", "a[href*='/jobs/view/']"]
 
                 title_elem = None
-                for selector in title_selectors:
-                    title_elem = await card.query_selector(selector)
+                for s in title_selectors:
+                    title_elem = await card.query_selector(s)
                     if title_elem: break
 
                 company_elem = None
-                for selector in company_selectors:
-                    company_elem = await card.query_selector(selector)
+                for s in company_selectors:
+                    company_elem = await card.query_selector(s)
                     if company_elem: break
 
                 link_elem = None
-                for selector in link_selectors:
-                    link_elem = await card.query_selector(selector)
+                for s in link_selectors:
+                    link_elem = await card.query_selector(s)
                     if link_elem: break
 
-                if not title_elem or not link_elem:
-                    # If this "card" IS the link (from last ditch effort)
-                    if not link_elem and await card.evaluate("node => node.tagName === 'A'"):
-                         link_elem = card
-                         title = (await card.inner_text()).strip().split('\n')[0]
-                         company = "Unknown"
+                if not link_elem:
+                    if await card.evaluate("node => node.tagName === 'A'"):
+                        link_elem = card
+                        title = (await card.inner_text()).strip().split('\n')[0]
+                        company = "Unknown"
                     else:
                         continue
                 else:
-                    title = (await title_elem.inner_text()).strip()
+                    title = (await title_elem.inner_text()).strip() if title_elem else ""
                     company = (await company_elem.inner_text()).strip() if company_elem else "Unknown"
+
+                if not title:
+                    continue
 
                 url = await link_elem.get_attribute("href")
                 if url and not url.startswith("http"):
                     url = self.base_url + url
-
-                # Clean URL (remove tracking params)
                 if url and "?" in url:
                     url = url.split("?")[0]
+                if not url:
+                    continue
 
-                if not url: continue
-
-                # Extract external ID from URL robustly
                 parts = url.strip("/").split("/")
                 external_id = parts[-1] if parts else "unknown"
 
@@ -444,7 +651,7 @@ class LinkedInScraper:
             except Exception as e:
                 logger.error(f"Error extracting card: {e}")
 
-        logger.info(f"Extracted {len(jobs)} jobs from page")
+        logger.info(f"Browser extracted {len(jobs)} jobs")
         return jobs
 
     async def _get_job_details(self, context: BrowserContext, url: str) -> Dict[str, Any]:
@@ -452,20 +659,9 @@ class LinkedInScraper:
         await page.add_init_script(STEALTH_SCRIPT)
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(2)  # Wait for dynamic content
+            await asyncio.sleep(2)
 
-            # Try multiple selectors for job description
-            desc_selectors = [
-                 ".jobs-description",
-                 "#job-details",
-                 ".jobs-box__html-content",
-                 ".show-more-less-html__markup",
-                 ".description__text",
-                 "section.description",
-                 "div.job-description",
-                 ".core-section-container__content",
-            ]
-
+            desc_selectors = [".jobs-description", "#job-details", ".jobs-box__html-content", ".show-more-less-html__markup", ".description__text", "section.description", ".core-section-container__content"]
             description = ""
             description_html = ""
             for selector in desc_selectors:
@@ -475,28 +671,18 @@ class LinkedInScraper:
                         description = await elem.inner_text()
                         description_html = await elem.inner_html()
                         if description.strip(): break
-                except Exception: continue
+                except Exception:
+                    continue
 
             if not description:
-                # Fallback: get largest text block
                 description = await page.evaluate("""() => {
                     const texts = Array.from(document.querySelectorAll('div, section, article'))
-                        .map(el => el.innerText)
-                        .filter(t => t.length > 500);
+                        .map(el => el.innerText).filter(t => t.length > 500);
                     return texts.sort((a, b) => b.length - a.length)[0] || '';
                 }""")
 
-            # Location extraction - broader search
             location = ""
-            loc_selectors = [
-                ".jobs-unified-top-card__bullet",
-                ".top-card-layout__first-subline",
-                ".job-details-jobs-unified-top-card__bullet",
-                "span.jobs-unified-top-card__bullet",
-                ".topcard__flavor--bullet",
-                ".topcard__flavor:first-child",
-            ]
-            for selector in loc_selectors:
+            for selector in [".jobs-unified-top-card__bullet", ".top-card-layout__first-subline", ".topcard__flavor--bullet", ".topcard__flavor:first-child"]:
                 try:
                     elem = await page.query_selector(selector)
                     if elem:
@@ -504,34 +690,18 @@ class LinkedInScraper:
                         if text and not any(x in text.lower() for x in ["applied", "applicants", "ago"]):
                             location = text
                             break
-                except Exception: continue
+                except Exception:
+                    continue
 
-            # Detect Easy Apply
             is_easy_apply = await page.query_selector(".jobs-apply-button--easy-apply, .apply-button--easy-apply") is not None
 
-            # extract apply url
-            apply_url = None
-            if not is_easy_apply:
-                apply_button = await page.query_selector(".jobs-apply-button")
-                if apply_button:
-                    try:
-                        async with page.expect_popup() as popup_info:
-                            await apply_button.click()
-                        popup = await popup_info.value
-                        apply_url = popup.url
-                        await popup.close()
-                    except:
-                        apply_url = url
-
-            # extract work type
             work_type = "onsite"
-            workplace_elem = await page.query_selector(".jobs-unified-top-card__workplace-type, .topcard__flavor--bullet:last-child")
+            workplace_elem = await page.query_selector(".jobs-unified-top-card__workplace-type")
             if workplace_elem:
                 wt_text = (await workplace_elem.inner_text()).lower()
                 if "remote" in wt_text: work_type = "remote"
                 elif "hybrid" in wt_text: work_type = "hybrid"
-
-            if work_type == "onsite" and "remote" in description.lower()[:500]:
+            elif description and "remote" in description.lower()[:500]:
                 work_type = "remote"
 
             return {
@@ -540,18 +710,12 @@ class LinkedInScraper:
                 "location": location.strip(),
                 "work_type": work_type,
                 "is_easy_apply": is_easy_apply,
-                "apply_url": apply_url,
+                "apply_url": None,
                 "scraped_at": datetime.now()
             }
         except Exception as e:
             logger.error(f"Error in _get_job_details for {url}: {e}")
-            return {
-                "description": "",
-                "description_html": "",
-                "location": "",
-                "work_type": "unknown",
-                "scraped_at": datetime.now()
-            }
+            return {"description": "", "description_html": "", "location": "", "work_type": "unknown", "scraped_at": datetime.now()}
         finally:
             await page.close()
 
@@ -574,56 +738,42 @@ class GeneralWebScraper:
             await page.add_init_script(STEALTH_SCRIPT)
 
             try:
-                # Standardize URL - remove hash fragments for listing pages
                 if not url.startswith("http"):
                     url = "https://" + url
 
-                # For Google Careers, navigate to the main listings page
                 is_google_careers = "google.com/about/careers" in url or "careers.google.com" in url
                 if is_google_careers:
                     url = "https://www.google.com/about/careers/applications/jobs/results"
-                    logger.info(f"Detected Google Careers - using main listing page: {url}")
+                    logger.info(f"Detected Google Careers: {url}")
 
                 logger.info(f"Navigating to: {url}")
                 await page.goto(url, wait_until="networkidle", timeout=45000)
 
-                # Special handling for SPAs like Google Careers
                 if is_google_careers:
-                    logger.info("Google Careers detected - applying SPA scraping strategy")
-                    await asyncio.sleep(5)  # Initial wait for JS
-
-                    # Scroll to trigger lazy loading
+                    await asyncio.sleep(5)
                     for _ in range(3):
                         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         await asyncio.sleep(2)
-
-                    # Wait for job cards to appear
                     try:
                         await page.wait_for_selector("div[role='listitem'], .gc-card, [data-job-id]", timeout=10000)
-                        logger.info("Job cards detected on page")
                     except:
-                        logger.warning("No job cards found with standard selectors")
+                        pass
                 else:
-                    await asyncio.sleep(4)  # Wait for JS rendering and dynamic content
+                    await asyncio.sleep(4)
 
-                # Log page title for debugging
                 page_title = await page.title()
                 logger.info(f"Page loaded: {page_title}")
 
-                # Evaluation script to find job-like links
                 found_links = await page.evaluate("""({keywords, locations}) => {
                     const links = Array.from(document.querySelectorAll('a'));
                     const jobs = [];
                     const seen = new Set();
-
-                    console.log(`Total links found: ${links.length}`);
 
                     links.forEach(link => {
                         const text = link.innerText.trim();
                         const href = link.href;
                         if (!text || !href) return;
 
-                        // Heuristics for job links - more permissive
                         const looksLikeJob = (
                             text.length > 5 &&
                             text.length < 200 &&
@@ -634,16 +784,11 @@ class GeneralWebScraper:
                             !/login|signup|privacy|term|cookie|blog|about|contact|press|help|faq|support/i.test(href)
                         );
 
-                        // Check keywords - case insensitive partial match
                         const matchesKeyword = keywords.some(k => {
-                            const keyword = k.toLowerCase();
-                            const textLower = text.toLowerCase();
-                            // Split keyword into words for better matching
-                            const words = keyword.split(' ');
-                            return words.every(word => textLower.includes(word));
+                            const words = k.toLowerCase().split(' ');
+                            return words.every(word => text.toLowerCase().includes(word));
                         });
 
-                        // Check locations if provided
                         let matchesLocation = true;
                         if (locations && locations.length > 0) {
                             matchesLocation = locations.some(l =>
@@ -654,82 +799,45 @@ class GeneralWebScraper:
 
                         if (href && !seen.has(href) && (looksLikeJob || matchesKeyword)) {
                             seen.add(href);
-                            jobs.push({
-                                title: text,
-                                url: href,
-                                matchesKeyword,
-                                matchesLocation
-                            });
+                            jobs.push({title: text, url: href, matchesKeyword, matchesLocation});
                         }
                     });
-
-                    console.log(`Job-like links found: ${jobs.length}`);
                     return jobs;
                 }""", {"keywords": keywords, "locations": locations})
 
-                logger.info(f"Heuristic scanner found {len(found_links)} potential candidates")
+                logger.info(f"Heuristic scanner found {len(found_links)} candidates")
 
-                if len(found_links) == 0:
-                    # Try alternative approach - look for common job listing patterns
-                    logger.warning("No links found with standard heuristics. Trying alternative selectors...")
-
-                    # Get page content for debugging
-                    content_sample = await page.evaluate("""() => {
-                        const body = document.body.innerText;
-                        return body.substring(0, 500);
-                    }""")
-                    logger.info(f"Page content sample: {content_sample[:200]}...")
-
-                    # Try to find job cards or listings
-                    job_cards = await page.query_selector_all("div[class*='job'], li[class*='job'], article[class*='job']")
-                    logger.info(f"Found {len(job_cards)} potential job card elements")
-
-                # Filter and score - make location optional
-                scored_candidates = []
+                scored = []
                 for link in found_links:
                     score = 0
-                    if link['matchesKeyword']: score += 3  # Keyword match is most important
-                    if link['matchesLocation']: score += 2  # Location match is a bonus
+                    if link['matchesKeyword']: score += 3
+                    if link['matchesLocation']: score += 2
+                    if score > 0:
+                        scored.append((score, link))
 
-                    # Don't exclude jobs that don't match location - just give them lower priority
-                    # Only require keyword match OR job-like appearance
-                    if score > 0 or link.get('matchesKeyword', False):
-                        scored_candidates.append((score, link))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                final = [j[1] for j in scored[:limit]]
 
-                scored_candidates.sort(key=lambda x: x[0], reverse=True)
-                final_candidates = [j[1] for j in scored_candidates[:limit]]
-
-                logger.info(f"After filtering: {len(final_candidates)} candidates selected for detail scraping")
-
-                if len(final_candidates) == 0:
-                    logger.error(f"No job candidates found matching criteria. Keywords: {keywords}, Locations: {locations}")
-                    await browser.close()
+                if not final:
+                    logger.error(f"No job candidates found. Keywords: {keywords}")
                     return []
 
-                # Fetch details for found candidates
                 scraped_jobs = []
-                for idx, candidate in enumerate(final_candidates):
+                for idx, candidate in enumerate(final):
                     try:
-                        logger.info(f"Scraping detail {idx+1}/{len(final_candidates)}: {candidate['url']}")
                         detail_page = await context.new_page()
                         await detail_page.goto(candidate['url'], wait_until="domcontentloaded", timeout=20000)
 
                         description = await detail_page.evaluate("""() => {
-                            // Try to find the container with the most text
-                            const containers = Array.from(document.querySelectorAll('div, section, article'))
-                                .filter(el => el.innerText.length > 300);
-                            return containers.sort((a, b) => b.innerText.length - a.innerText.length)[0]?.innerText || '';
+                            const c = Array.from(document.querySelectorAll('div, section, article')).filter(el => el.innerText.length > 300);
+                            return c.sort((a, b) => b.innerText.length - a.innerText.length)[0]?.innerText || '';
                         }""")
-
                         description_html = await detail_page.evaluate("""() => {
-                            const containers = Array.from(document.querySelectorAll('div, section, article'))
-                                .filter(el => el.innerText.length > 300);
-                            return containers.sort((a, b) => b.innerText.length - a.innerText.length)[0]?.innerHTML || '';
+                            const c = Array.from(document.querySelectorAll('div, section, article')).filter(el => el.innerText.length > 300);
+                            return c.sort((a, b) => b.innerText.length - a.innerText.length)[0]?.innerHTML || '';
                         }""")
 
-                        # Simple location/company detection
                         domain = urllib.parse.urlparse(url).netloc.replace('www.', '').split('.')[0].capitalize()
-
                         scraped_jobs.append({
                             "external_id": hashlib.md5(candidate['url'].encode()).hexdigest(),
                             "title": candidate['title'].split('\\n')[0].strip()[:200],
@@ -739,14 +847,14 @@ class GeneralWebScraper:
                             "description": description.strip(),
                             "description_html": description_html.strip(),
                             "location": "See description",
-                            "work_type": "onsite" if "remote" not in description.lower() else "remote",
+                            "work_type": "remote" if "remote" in description.lower() else "onsite",
                             "scraped_at": datetime.now()
                         })
                         await detail_page.close()
                     except Exception as e:
                         logger.error(f"Failed to scrape detail for {candidate['url']}: {e}")
 
-                logger.info(f"Successfully scraped {len(scraped_jobs)} jobs from {url}")
+                logger.info(f"Scraped {len(scraped_jobs)} jobs from {url}")
                 return scraped_jobs
 
             except Exception as e:
