@@ -243,7 +243,8 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
                         filters={
                             "date_posted": params.get("date_posted"),
                             "work_types": params.get("work_types"),
-                            "experience_levels": params.get("experience_levels")
+                            "experience_levels": params.get("experience_levels"),
+                            "easy_apply_only": params.get("easy_apply_only"),
                         },
                         check_cancelled=lambda: active_searches.get(search_id, {}).get("cancelled", False)
                     )
@@ -312,6 +313,17 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
                     break
             if total_jobs_found >= limit_per_search:
                 break
+
+        # Update the SearchQuery record with final results count
+        if db_search_id:
+            try:
+                search_record = db.query(SearchQuery).filter(SearchQuery.id == db_search_id).first()
+                if search_record:
+                    search_record.results_count = total_jobs_found
+                    db.commit()
+                    logger.info(f"Search {db_search_id} completed. Total jobs found: {total_jobs_found}")
+            except Exception as e:
+                logger.error(f"Failed to update results count: {e}")
 
     except Exception as e:
         logger.exception(f"Search task failed: {e}")
