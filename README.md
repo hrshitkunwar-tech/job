@@ -18,13 +18,17 @@ Job Search is an AI-powered job application assistant that automates the tedious
 
 ### 2. Installation
 
-1. Clone the repository and navigate to the directory.
+1. Clone the repository and enter it:
+   ```bash
+   git clone https://github.com/hrshitkunwar-tech/job.git
+   cd job
+   ```
 2. Create a virtual environment and activate it:
    ```bash
    python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
-   > Once the venv is activated, `python` and `pip` will work without the `3` suffix.
+   > Once the venv is activated, `python`, `pip`, and `playwright` will work without the `3` suffix.
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
