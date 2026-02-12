@@ -21,9 +21,10 @@ Job Search is an AI-powered job application assistant that automates the tedious
 1. Clone the repository and navigate to the directory.
 2. Create a virtual environment and activate it:
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
+   > Once the venv is activated, `python` and `pip` will work without the `3` suffix.
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
