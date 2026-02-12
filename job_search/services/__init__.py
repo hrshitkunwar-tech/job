@@ -3,7 +3,7 @@ from job_search.services.resume_parser import ResumeParser
 from job_search.services.resume_tailor import ResumeTailor
 from job_search.services.resume_generator import ResumeGenerator
 from job_search.services.job_matcher import JobMatcher
-from job_search.services.scraper import LinkedInScraper
+from job_search.services.scraper import LinkedInScraper, WebJobScraper
 
 __all__ = [
     "LLMClient",
@@ -13,4 +13,5 @@ __all__ = [
     "ResumeGenerator",
     "JobMatcher",
     "LinkedInScraper",
+    "WebJobScraper",
 ]

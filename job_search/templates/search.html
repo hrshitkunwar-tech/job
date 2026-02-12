@@ -123,7 +123,7 @@
             <!-- Portals Section -->
             <div class="col-span-1 md:col-span-2 p-4 bg-indigo-50 rounded-lg border border-indigo-100">
                 <label class="block text-sm font-bold text-indigo-900 mb-3">Job Portals (Select to Authenticate)</label>
-                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-4">
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mb-4">
                     <!-- LinkedIn -->
                     <label
                         class="relative flex flex-col items-center p-3 bg-white rounded-xl border-2 border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-all">
@@ -174,6 +174,16 @@
                             <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
                         </div>
                     </label>
+                    <!-- Web (Free APIs) -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:bg-green-50 hover:border-green-300 transition-all">
+                        <input type="checkbox" name="portals" value="web" class="hidden peer"
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-green-600">Web</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-green-500 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
                 </div>
 
                 <!-- Custom URL / Career Site Input Container -->
@@ -196,8 +206,7 @@
                     <input type="hidden" name="custom_portal_urls" id="custom-portal-urls-hidden">
                 </div>
 
-                <p class="text-[10px] text-indigo-400 mt-2 font-medium italic">* Selected portals will open for
-                    authentication if session expired</p>
+                <p class="text-[10px] text-indigo-400 mt-2 font-medium italic">* LinkedIn/Indeed need login. <b>Web</b> works instantly — no login required.</p>
             </div>
 
             <!-- Filters -->

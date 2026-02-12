@@ -862,3 +862,172 @@ class GeneralWebScraper:
                 return []
             finally:
                 await browser.close()
+
+
+class WebJobScraper:
+    """
+    Scrapes jobs from free, public job APIs that require no authentication.
+    Uses Remotive (remote jobs) and Indeed (general jobs) as sources.
+    This is the most reliable scraping method — no browser, no bot detection.
+    """
+
+    REMOTIVE_API = "https://remotive.com/api/remote-jobs"
+    INDEED_SEARCH = "https://www.indeed.com/jobs"
+
+    async def scrape_jobs(self, query: str, location: str = "", limit: int = 10, filters: dict = None) -> List[Dict[str, Any]]:
+        """Scrape jobs from multiple free web sources."""
+        all_jobs: List[Dict[str, Any]] = []
+
+        # Source 1: Remotive API (remote jobs — always works)
+        remotive_jobs = await self._scrape_remotive(query, limit)
+        all_jobs.extend(remotive_jobs)
+
+        # Source 2: Indeed HTML scraping
+        if len(all_jobs) < limit:
+            indeed_jobs = await self._scrape_indeed(query, location, limit - len(all_jobs))
+            all_jobs.extend(indeed_jobs)
+
+        logger.info(f"Web scraper total: {len(all_jobs)} jobs from all sources")
+        return all_jobs[:limit]
+
+    async def _scrape_remotive(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Fetch jobs from Remotive's free public API."""
+        logger.info(f"Remotive API: searching for '{query}'")
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
+                resp = await client.get(
+                    self.REMOTIVE_API,
+                    params={"search": query, "limit": min(limit * 2, 50)},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"Remotive returned HTTP {resp.status_code}")
+                    return []
+
+                data = resp.json()
+                raw_jobs = data.get("jobs", [])
+                logger.info(f"Remotive returned {len(raw_jobs)} jobs")
+
+                return [self._map_remotive_job(j) for j in raw_jobs[:limit]]
+
+        except Exception as e:
+            logger.error(f"Remotive scraping failed: {e}")
+            return []
+
+    @staticmethod
+    def _map_remotive_job(j: dict) -> Dict[str, Any]:
+        """Map a Remotive API job to our standard format."""
+        desc_html = j.get("description", "")
+        desc_text = _strip_tags(desc_html) if desc_html else ""
+        return {
+            "external_id": f"remotive-{j.get('id', '')}",
+            "title": j.get("title", ""),
+            "company": j.get("company_name", "Unknown"),
+            "url": j.get("url", ""),
+            "location": j.get("candidate_required_location", "Remote"),
+            "work_type": "remote",
+            "is_easy_apply": False,
+            "apply_url": j.get("url", ""),
+            "description": desc_text,
+            "description_html": desc_html,
+            "source": "remotive",
+            "scraped_at": datetime.now(),
+        }
+
+    async def _scrape_indeed(self, query: str, location: str, limit: int) -> List[Dict[str, Any]]:
+        """Scrape jobs from Indeed's public search pages."""
+        logger.info(f"Indeed: searching for '{query}' in '{location}'")
+        params = {"q": query, "sort": "date"}
+        if location:
+            params["l"] = location
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=20.0,
+                headers=HTTP_HEADERS,
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(self.INDEED_SEARCH, params=params)
+                if resp.status_code != 200:
+                    logger.warning(f"Indeed returned HTTP {resp.status_code}")
+                    return []
+
+                html = resp.text
+                jobs = _parse_indeed_html(html, limit)
+                logger.info(f"Indeed scraping found {len(jobs)} jobs")
+
+                # Fetch descriptions for each job
+                for job in jobs:
+                    if not job.get("url"):
+                        continue
+                    try:
+                        await asyncio.sleep(random.uniform(0.5, 1.5))
+                        detail_resp = await client.get(job["url"])
+                        if detail_resp.status_code == 200:
+                            desc_match = re.search(
+                                r'id="jobDescriptionText"[^>]*>(.*?)</div>',
+                                detail_resp.text, re.DOTALL,
+                            )
+                            if desc_match:
+                                job["description_html"] = desc_match.group(1).strip()
+                                job["description"] = _strip_tags(desc_match.group(1))
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch Indeed detail: {e}")
+
+                return jobs
+
+        except Exception as e:
+            logger.error(f"Indeed scraping failed: {e}")
+            return []
+
+
+def _parse_indeed_html(html: str, limit: int) -> List[Dict[str, Any]]:
+    """Parse Indeed search results HTML."""
+    jobs = []
+
+    # Indeed uses data-jk attributes for job keys and jobTitle class for titles
+    # Pattern: <a ... data-jk="XXXX" ... class="...jobTitle...">...<span>Title</span></a>
+    # Company: <span data-testid="company-name">Company</span>
+    # Location: <div data-testid="text-location">Location</div>
+
+    # Find all job cards by looking for data-jk attributes
+    card_pattern = re.compile(r'data-jk="([a-zA-Z0-9]+)"')
+    title_pattern = re.compile(r'class="[^"]*jobTitle[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>', re.DOTALL)
+    company_pattern = re.compile(r'data-testid="company-name"[^>]*>(.*?)</span>', re.DOTALL)
+    location_pattern = re.compile(r'data-testid="text-location"[^>]*>(.*?)</div>', re.DOTALL)
+
+    # Split by job cards — each card starts with data-jk attribute
+    chunks = re.split(r'(?=data-jk="[a-zA-Z0-9]+?")', html)
+
+    for chunk in chunks[1:]:
+        if len(jobs) >= limit:
+            break
+
+        jk_match = card_pattern.search(chunk)
+        title_match = title_pattern.search(chunk)
+
+        if not jk_match or not title_match:
+            continue
+
+        job_key = jk_match.group(1)
+        title = _strip_tags(title_match.group(1))
+        company_match = company_pattern.search(chunk)
+        company = _strip_tags(company_match.group(1)) if company_match else "Unknown"
+        loc_match = location_pattern.search(chunk)
+        location = _strip_tags(loc_match.group(1)) if loc_match else ""
+
+        jobs.append({
+            "external_id": f"indeed-{job_key}",
+            "title": title,
+            "company": company,
+            "url": f"https://www.indeed.com/viewjob?jk={job_key}",
+            "location": location,
+            "work_type": "remote" if "remote" in location.lower() else "onsite",
+            "is_easy_apply": False,
+            "apply_url": f"https://www.indeed.com/viewjob?jk={job_key}",
+            "description": f"{title} at {company}",
+            "description_html": "",
+            "source": "indeed",
+            "scraped_at": datetime.now(),
+        })
+
+    return jobs

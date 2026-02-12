@@ -117,7 +117,7 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
     """Background task to run LinkedIn scraping."""
     import logging
     from job_search.database import SessionLocal
-    from job_search.services.scraper import LinkedInScraper, GeneralWebScraper
+    from job_search.services.scraper import LinkedInScraper, GeneralWebScraper, WebJobScraper
     from job_search.services.job_matcher import JobMatcher
     from job_search.services.llm_client import get_llm_client
     from job_search.models import Job, UserProfile
@@ -148,6 +148,7 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
         # Setup services
         scraper = LinkedInScraper()
         custom_scraper = GeneralWebScraper()
+        web_scraper = WebJobScraper()
         llm = get_llm_client()
         matcher = JobMatcher(llm_client=llm)
 
@@ -219,7 +220,73 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
                     db.commit()
                 continue
 
-            if portal != "linkedin":
+            if portal == "web":
+                # Web portal: scrape from free public job APIs (Remotive, Indeed)
+                for keyword in keywords_list:
+                    if total_jobs_found >= limit_per_search:
+                        break
+
+                    if active_searches.get(search_id, {}).get("cancelled"):
+                        return
+
+                    location = locations_list[0] if locations_list else ""
+                    logger.info(f"[WEB] Scraping '{keyword}' in '{location}'")
+
+                    found_jobs = await web_scraper.scrape_jobs(
+                        query=keyword,
+                        location=location,
+                        limit=limit_per_search - total_jobs_found,
+                        filters={
+                            "date_posted": params.get("date_posted"),
+                            "work_types": params.get("work_types"),
+                        },
+                    )
+
+                    for job_data in found_jobs:
+                        try:
+                            if not job_data.get("title"):
+                                continue
+
+                            existing = db.query(Job).filter(Job.external_id == job_data.get("external_id")).first()
+                            if existing:
+                                if db_search_id:
+                                    existing.search_query_id = db_search_id
+                                total_jobs_found += 1
+                                continue
+
+                            match_result = matcher.score_job(job_data, profile_data)
+
+                            job = Job(
+                                external_id=job_data.get("external_id"),
+                                source=job_data.get("source", "web"),
+                                title=job_data.get("title"),
+                                company=job_data.get("company", "Unknown"),
+                                location=job_data.get("location", ""),
+                                work_type=job_data.get("work_type", "onsite"),
+                                is_easy_apply=job_data.get("is_easy_apply", False),
+                                apply_url=job_data.get("apply_url"),
+                                description=job_data.get("description", ""),
+                                description_html=job_data.get("description_html", ""),
+                                url=job_data.get("url", ""),
+                                match_score=match_result.overall_score,
+                                match_details={
+                                    "skill_score": match_result.skill_score,
+                                    "title_score": match_result.title_score,
+                                    "explanation": match_result.explanation,
+                                    "matched_skills": match_result.matched_skills,
+                                    "missing_skills": match_result.missing_skills
+                                },
+                                search_query_id=db_search_id
+                            )
+                            db.add(job)
+                            total_jobs_found += 1
+                        except Exception as inner_e:
+                            logger.error(f"Failed to prepare web job: {inner_e}")
+
+                    db.commit()
+                continue
+
+            if portal not in ("linkedin",):
                 logger.warning(f"Portal '{portal}' is not yet fully implemented for scraping. Skipping.")
                 continue
 

@@ -1,6 +1,11 @@
-"""Test LinkedIn HTML parsing logic with mock data."""
+"""Test HTML parsing logic for LinkedIn, Indeed, and Remotive with mock data."""
 
-from job_search.services.scraper import _parse_job_cards_from_html, _strip_tags
+from job_search.services.scraper import (
+    _parse_job_cards_from_html,
+    _parse_indeed_html,
+    _strip_tags,
+    WebJobScraper,
+)
 
 
 # Mock HTML that mimics LinkedIn's public search results page
@@ -119,3 +124,113 @@ def test_strip_tags():
     assert _strip_tags("<b>Hello</b> <i>World</i>") == "Hello World"
     assert _strip_tags("Plain text") == "Plain text"
     assert _strip_tags("&amp; &lt;test&gt;") == "& <test>"
+
+
+# ── Remotive API mapping tests ──────────────────────────────────────────
+
+MOCK_REMOTIVE_JOB = {
+    "id": 99999,
+    "title": "Customer Success Lead",
+    "company_name": "TechCo",
+    "url": "https://remotive.com/remote-jobs/customer-support/customer-success-lead-99999",
+    "candidate_required_location": "Worldwide",
+    "description": "<p>We are looking for a <b>CSM</b> to join our team.</p>",
+    "tags": ["customer-success"],
+}
+
+
+def test_remotive_mapping_title():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert job["title"] == "Customer Success Lead"
+
+
+def test_remotive_mapping_company():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert job["company"] == "TechCo"
+
+
+def test_remotive_mapping_source():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert job["source"] == "remotive"
+
+
+def test_remotive_mapping_description_strips_html():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert "<p>" not in job["description"]
+    assert "<b>" not in job["description"]
+    assert "CSM" in job["description"]
+
+
+def test_remotive_mapping_preserves_description_html():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert "<p>" in job["description_html"]
+
+
+def test_remotive_mapping_external_id():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert job["external_id"] == "remotive-99999"
+
+
+def test_remotive_mapping_work_type_is_remote():
+    job = WebJobScraper._map_remotive_job(MOCK_REMOTIVE_JOB)
+    assert job["work_type"] == "remote"
+
+
+# ── Indeed HTML parsing tests ───────────────────────────────────────────
+
+MOCK_INDEED_HTML = """
+<html><body>
+<div class="job_seen_beacon" data-jk="abc123def">
+  <h2 class="jobTitle"><a id="job_abc123def" href="/rc/clk?jk=abc123def" class="jcs-JobTitle"><span title="Customer Success Manager">Customer Success Manager</span></a></h2>
+  <span data-testid="company-name">Acme India Pvt Ltd</span>
+  <div data-testid="text-location">Bangalore, Karnataka</div>
+</div>
+<div class="job_seen_beacon" data-jk="xyz789ghi">
+  <h2 class="jobTitle"><a id="job_xyz789ghi" href="/rc/clk?jk=xyz789ghi" class="jcs-JobTitle"><span title="Account Manager">Account Manager</span></a></h2>
+  <span data-testid="company-name">Globex Corp</span>
+  <div data-testid="text-location">Remote</div>
+</div>
+</body></html>
+"""
+
+
+def test_indeed_parses_all_jobs():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert len(jobs) == 2
+
+
+def test_indeed_extracts_title():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[0]["title"] == "Customer Success Manager"
+    assert jobs[1]["title"] == "Account Manager"
+
+
+def test_indeed_extracts_company():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[0]["company"] == "Acme India Pvt Ltd"
+    assert jobs[1]["company"] == "Globex Corp"
+
+
+def test_indeed_extracts_location():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[0]["location"] == "Bangalore, Karnataka"
+
+
+def test_indeed_builds_url():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[0]["url"] == "https://www.indeed.com/viewjob?jk=abc123def"
+
+
+def test_indeed_detects_remote():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[1]["work_type"] == "remote"
+
+
+def test_indeed_sets_source():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
+    assert jobs[0]["source"] == "indeed"
+
+
+def test_indeed_respects_limit():
+    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=1)
+    assert len(jobs) == 1
