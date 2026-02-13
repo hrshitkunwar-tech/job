@@ -1,8 +1,7 @@
-"""Test HTML parsing logic for LinkedIn, Indeed, and Remotive with mock data."""
+"""Test HTML parsing logic for LinkedIn and free job API mappers with mock data."""
 
 from job_search.services.scraper import (
     _parse_job_cards_from_html,
-    _parse_indeed_html,
     _strip_tags,
     WebJobScraper,
 )
@@ -176,61 +175,150 @@ def test_remotive_mapping_work_type_is_remote():
     assert job["work_type"] == "remote"
 
 
-# ── Indeed HTML parsing tests ───────────────────────────────────────────
+# ── Arbeitnow API mapping tests ───────────────────────────────────────
 
-MOCK_INDEED_HTML = """
-<html><body>
-<div class="job_seen_beacon" data-jk="abc123def">
-  <h2 class="jobTitle"><a id="job_abc123def" href="/rc/clk?jk=abc123def" class="jcs-JobTitle"><span title="Customer Success Manager">Customer Success Manager</span></a></h2>
-  <span data-testid="company-name">Acme India Pvt Ltd</span>
-  <div data-testid="text-location">Bangalore, Karnataka</div>
-</div>
-<div class="job_seen_beacon" data-jk="xyz789ghi">
-  <h2 class="jobTitle"><a id="job_xyz789ghi" href="/rc/clk?jk=xyz789ghi" class="jcs-JobTitle"><span title="Account Manager">Account Manager</span></a></h2>
-  <span data-testid="company-name">Globex Corp</span>
-  <div data-testid="text-location">Remote</div>
-</div>
-</body></html>
-"""
+MOCK_ARBEITNOW_JOB = {
+    "slug": "account-manager-acme-123",
+    "title": "Account Manager",
+    "company_name": "Acme Corp",
+    "url": "https://www.arbeitnow.com/view/account-manager-acme-123",
+    "location": "Remote, Europe",
+    "remote": True,
+    "description": "<p>Manage key accounts and drive <b>revenue growth</b>.</p>",
+}
 
 
-def test_indeed_parses_all_jobs():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert len(jobs) == 2
+def test_arbeitnow_mapping_title():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert job["title"] == "Account Manager"
 
 
-def test_indeed_extracts_title():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[0]["title"] == "Customer Success Manager"
-    assert jobs[1]["title"] == "Account Manager"
+def test_arbeitnow_mapping_company():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert job["company"] == "Acme Corp"
 
 
-def test_indeed_extracts_company():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[0]["company"] == "Acme India Pvt Ltd"
-    assert jobs[1]["company"] == "Globex Corp"
+def test_arbeitnow_mapping_source():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert job["source"] == "arbeitnow"
 
 
-def test_indeed_extracts_location():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[0]["location"] == "Bangalore, Karnataka"
+def test_arbeitnow_mapping_external_id():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert job["external_id"] == "arbeitnow-account-manager-acme-123"
 
 
-def test_indeed_builds_url():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[0]["url"] == "https://www.indeed.com/viewjob?jk=abc123def"
+def test_arbeitnow_mapping_remote_detection():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert job["work_type"] == "remote"
 
 
-def test_indeed_detects_remote():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[1]["work_type"] == "remote"
+def test_arbeitnow_mapping_strips_html():
+    job = WebJobScraper._map_arbeitnow_job(MOCK_ARBEITNOW_JOB)
+    assert "<p>" not in job["description"]
+    assert "revenue growth" in job["description"]
 
 
-def test_indeed_sets_source():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=10)
-    assert jobs[0]["source"] == "indeed"
+# ── RemoteOK API mapping tests ───────────────────────────────────────
+
+MOCK_REMOTEOK_JOB = {
+    "id": 55555,
+    "position": "Senior Account Manager",
+    "company": "GlobalTech",
+    "url": "https://remoteok.com/remote-jobs/55555",
+    "apply_url": "https://globaltech.com/apply/55555",
+    "location": "Worldwide",
+    "description": "<p>Looking for an experienced <b>account manager</b>.</p>",
+}
 
 
-def test_indeed_respects_limit():
-    jobs = _parse_indeed_html(MOCK_INDEED_HTML, limit=1)
-    assert len(jobs) == 1
+def test_remoteok_mapping_title():
+    job = WebJobScraper._map_remoteok_job(MOCK_REMOTEOK_JOB)
+    assert job["title"] == "Senior Account Manager"
+
+
+def test_remoteok_mapping_company():
+    job = WebJobScraper._map_remoteok_job(MOCK_REMOTEOK_JOB)
+    assert job["company"] == "GlobalTech"
+
+
+def test_remoteok_mapping_source():
+    job = WebJobScraper._map_remoteok_job(MOCK_REMOTEOK_JOB)
+    assert job["source"] == "remoteok"
+
+
+def test_remoteok_mapping_external_id():
+    job = WebJobScraper._map_remoteok_job(MOCK_REMOTEOK_JOB)
+    assert job["external_id"] == "remoteok-55555"
+
+
+def test_remoteok_mapping_apply_url():
+    job = WebJobScraper._map_remoteok_job(MOCK_REMOTEOK_JOB)
+    assert job["apply_url"] == "https://globaltech.com/apply/55555"
+
+
+# ── Himalayas API mapping tests ──────────────────────────────────────
+
+MOCK_HIMALAYAS_JOB = {
+    "id": "h-77777",
+    "title": "Account Manager",
+    "companyName": "StartupXYZ",
+    "applicationLink": "https://himalayas.app/jobs/h-77777/apply",
+    "location": "Remote",
+    "description": "We need an account manager to handle enterprise clients.",
+}
+
+
+def test_himalayas_mapping_title():
+    job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
+    assert job["title"] == "Account Manager"
+
+
+def test_himalayas_mapping_company():
+    job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
+    assert job["company"] == "StartupXYZ"
+
+
+def test_himalayas_mapping_source():
+    job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
+    assert job["source"] == "himalayas"
+
+
+def test_himalayas_mapping_external_id():
+    job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
+    assert job["external_id"] == "himalayas-h-77777"
+
+
+def test_himalayas_mapping_apply_url():
+    job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
+    assert job["apply_url"] == "https://himalayas.app/jobs/h-77777/apply"
+
+
+# ── Deduplication tests ──────────────────────────────────────────────
+
+def test_deduplicate_removes_exact_duplicates():
+    jobs = [
+        {"title": "Account Manager", "company": "Acme", "description": "Short"},
+        {"title": "Account Manager", "company": "Acme", "description": "Much longer description here"},
+    ]
+    result = WebJobScraper._deduplicate(jobs)
+    assert len(result) == 1
+    assert result[0]["description"] == "Much longer description here"
+
+
+def test_deduplicate_keeps_different_jobs():
+    jobs = [
+        {"title": "Account Manager", "company": "Acme", "description": "x"},
+        {"title": "Account Manager", "company": "Globex", "description": "y"},
+    ]
+    result = WebJobScraper._deduplicate(jobs)
+    assert len(result) == 2
+
+
+def test_deduplicate_case_insensitive():
+    jobs = [
+        {"title": "Account Manager", "company": "ACME CORP", "description": "a"},
+        {"title": "account manager", "company": "Acme Corp", "description": "abc"},
+    ]
+    result = WebJobScraper._deduplicate(jobs)
+    assert len(result) == 1

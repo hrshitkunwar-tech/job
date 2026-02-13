@@ -867,28 +867,83 @@ class GeneralWebScraper:
 class WebJobScraper:
     """
     Scrapes jobs from free, public job APIs that require no authentication.
-    Uses Remotive (remote jobs) and Indeed (general jobs) as sources.
-    This is the most reliable scraping method — no browser, no bot detection.
+    Sources: Remotive, Arbeitnow, RemoteOK, Himalayas.
+    All 4 APIs are queried in parallel for maximum coverage.
     """
 
     REMOTIVE_API = "https://remotive.com/api/remote-jobs"
-    INDEED_SEARCH = "https://www.indeed.com/jobs"
+    ARBEITNOW_API = "https://www.arbeitnow.com/api/job-board-api"
+    REMOTEOK_API = "https://remoteok.com/api"
+    HIMALAYAS_API = "https://himalayas.app/jobs/api"
+
+    def __init__(self):
+        self._last_warnings: List[str] = []
+        self._last_sources: List[str] = []
 
     async def scrape_jobs(self, query: str, location: str = "", limit: int = 10, filters: dict = None) -> List[Dict[str, Any]]:
-        """Scrape jobs from multiple free web sources."""
+        """Scrape jobs from multiple free web APIs in parallel."""
+        sources = ["remotive", "arbeitnow", "remoteok", "himalayas"]
+
+        results = await asyncio.gather(
+            self._scrape_remotive(query, limit),
+            self._scrape_arbeitnow(query, limit),
+            self._scrape_remoteok(query, limit),
+            self._scrape_himalayas(query, limit),
+            return_exceptions=True,
+        )
+
         all_jobs: List[Dict[str, Any]] = []
+        sources_succeeded = []
+        warnings = []
 
-        # Source 1: Remotive API (remote jobs — always works)
-        remotive_jobs = await self._scrape_remotive(query, limit)
-        all_jobs.extend(remotive_jobs)
+        for source_name, result in zip(sources, results):
+            if isinstance(result, Exception):
+                logger.error(f"{source_name} raised exception: {result}")
+                warnings.append(f"{source_name} failed: {result}")
+            elif isinstance(result, list):
+                if result:
+                    sources_succeeded.append(source_name)
+                all_jobs.extend(result)
 
-        # Source 2: Indeed HTML scraping
-        if len(all_jobs) < limit:
-            indeed_jobs = await self._scrape_indeed(query, location, limit - len(all_jobs))
-            all_jobs.extend(indeed_jobs)
+        all_jobs = self._deduplicate(all_jobs)
 
-        logger.info(f"Web scraper total: {len(all_jobs)} jobs from all sources")
+        if not all_jobs:
+            location_hint = f" in '{location}'" if location else ""
+            warnings.append(
+                f"No results found for '{query}'{location_hint}. "
+                "Web search queries remote-job boards (Remotive, Arbeitnow, RemoteOK, Himalayas). "
+                "These boards focus on remote/global positions and may not have location-specific jobs. "
+                "Try broader keywords or the LinkedIn portal for local results."
+            )
+
+        logger.info(
+            f"Web scraper total: {len(all_jobs)} jobs from {sources_succeeded}. "
+            f"Warnings: {warnings}"
+        )
+
+        self._last_warnings = warnings
+        self._last_sources = sources_succeeded
+
         return all_jobs[:limit]
+
+    @staticmethod
+    def _deduplicate(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove duplicate jobs based on normalized title + company."""
+        seen: Dict[tuple, Dict[str, Any]] = {}
+        for job in jobs:
+            key = (
+                job.get("title", "").lower().strip(),
+                job.get("company", "").lower().strip(),
+            )
+            if key in seen:
+                existing = seen[key]
+                if len(job.get("description", "")) > len(existing.get("description", "")):
+                    seen[key] = job
+            else:
+                seen[key] = job
+        return list(seen.values())
+
+    # --- Remotive ---
 
     async def _scrape_remotive(self, query: str, limit: int) -> List[Dict[str, Any]]:
         """Fetch jobs from Remotive's free public API."""
@@ -933,101 +988,145 @@ class WebJobScraper:
             "scraped_at": datetime.now(),
         }
 
-    async def _scrape_indeed(self, query: str, location: str, limit: int) -> List[Dict[str, Any]]:
-        """Scrape jobs from Indeed's public search pages."""
-        logger.info(f"Indeed: searching for '{query}' in '{location}'")
-        params = {"q": query, "sort": "date"}
-        if location:
-            params["l"] = location
+    # --- Arbeitnow ---
 
+    async def _scrape_arbeitnow(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Fetch jobs from Arbeitnow's free public API (client-side filtering)."""
+        logger.info(f"Arbeitnow API: searching for '{query}'")
         try:
-            async with httpx.AsyncClient(
-                timeout=20.0,
-                headers=HTTP_HEADERS,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(self.INDEED_SEARCH, params=params)
+            async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
+                resp = await client.get(self.ARBEITNOW_API)
                 if resp.status_code != 200:
-                    logger.warning(f"Indeed returned HTTP {resp.status_code}")
+                    logger.warning(f"Arbeitnow returned HTTP {resp.status_code}")
                     return []
 
-                html = resp.text
-                jobs = _parse_indeed_html(html, limit)
-                logger.info(f"Indeed scraping found {len(jobs)} jobs")
-
-                # Fetch descriptions for each job
-                for job in jobs:
-                    if not job.get("url"):
-                        continue
-                    try:
-                        await asyncio.sleep(random.uniform(0.5, 1.5))
-                        detail_resp = await client.get(job["url"])
-                        if detail_resp.status_code == 200:
-                            desc_match = re.search(
-                                r'id="jobDescriptionText"[^>]*>(.*?)</div>',
-                                detail_resp.text, re.DOTALL,
-                            )
-                            if desc_match:
-                                job["description_html"] = desc_match.group(1).strip()
-                                job["description"] = _strip_tags(desc_match.group(1))
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch Indeed detail: {e}")
-
-                return jobs
+                data = resp.json()
+                raw_jobs = data.get("data", [])
+                query_words = query.lower().split()
+                filtered = [
+                    j for j in raw_jobs
+                    if all(
+                        word in (j.get("title", "") + " " + j.get("description", "")).lower()
+                        for word in query_words
+                    )
+                ]
+                logger.info(f"Arbeitnow: {len(raw_jobs)} total, {len(filtered)} matched '{query}'")
+                return [self._map_arbeitnow_job(j) for j in filtered[:limit]]
 
         except Exception as e:
-            logger.error(f"Indeed scraping failed: {e}")
+            logger.error(f"Arbeitnow scraping failed: {e}")
             return []
 
-
-def _parse_indeed_html(html: str, limit: int) -> List[Dict[str, Any]]:
-    """Parse Indeed search results HTML."""
-    jobs = []
-
-    # Indeed uses data-jk attributes for job keys and jobTitle class for titles
-    # Pattern: <a ... data-jk="XXXX" ... class="...jobTitle...">...<span>Title</span></a>
-    # Company: <span data-testid="company-name">Company</span>
-    # Location: <div data-testid="text-location">Location</div>
-
-    # Find all job cards by looking for data-jk attributes
-    card_pattern = re.compile(r'data-jk="([a-zA-Z0-9]+)"')
-    title_pattern = re.compile(r'class="[^"]*jobTitle[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>', re.DOTALL)
-    company_pattern = re.compile(r'data-testid="company-name"[^>]*>(.*?)</span>', re.DOTALL)
-    location_pattern = re.compile(r'data-testid="text-location"[^>]*>(.*?)</div>', re.DOTALL)
-
-    # Split by job cards — each card starts with data-jk attribute
-    chunks = re.split(r'(?=data-jk="[a-zA-Z0-9]+?")', html)
-
-    for chunk in chunks[1:]:
-        if len(jobs) >= limit:
-            break
-
-        jk_match = card_pattern.search(chunk)
-        title_match = title_pattern.search(chunk)
-
-        if not jk_match or not title_match:
-            continue
-
-        job_key = jk_match.group(1)
-        title = _strip_tags(title_match.group(1))
-        company_match = company_pattern.search(chunk)
-        company = _strip_tags(company_match.group(1)) if company_match else "Unknown"
-        loc_match = location_pattern.search(chunk)
-        location = _strip_tags(loc_match.group(1)) if loc_match else ""
-
-        jobs.append({
-            "external_id": f"indeed-{job_key}",
-            "title": title,
-            "company": company,
-            "url": f"https://www.indeed.com/viewjob?jk={job_key}",
-            "location": location,
-            "work_type": "remote" if "remote" in location.lower() else "onsite",
+    @staticmethod
+    def _map_arbeitnow_job(j: dict) -> Dict[str, Any]:
+        """Map an Arbeitnow API job to our standard format."""
+        desc_html = j.get("description", "")
+        desc_text = _strip_tags(desc_html) if desc_html else ""
+        return {
+            "external_id": f"arbeitnow-{j.get('slug', '')}",
+            "title": j.get("title", ""),
+            "company": j.get("company_name", "Unknown"),
+            "url": j.get("url", ""),
+            "location": j.get("location", "Remote"),
+            "work_type": "remote" if j.get("remote", False) else "onsite",
             "is_easy_apply": False,
-            "apply_url": f"https://www.indeed.com/viewjob?jk={job_key}",
-            "description": f"{title} at {company}",
-            "description_html": "",
-            "source": "indeed",
+            "apply_url": j.get("url", ""),
+            "description": desc_text,
+            "description_html": desc_html,
+            "source": "arbeitnow",
             "scraped_at": datetime.now(),
-        })
+        }
 
-    return jobs
+    # --- RemoteOK ---
+
+    async def _scrape_remoteok(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Fetch jobs from RemoteOK's free public API (client-side filtering)."""
+        logger.info(f"RemoteOK API: searching for '{query}'")
+        try:
+            headers = {**HTTP_HEADERS, "User-Agent": "job-search-app/1.0"}
+            async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+                resp = await client.get(self.REMOTEOK_API)
+                if resp.status_code != 200:
+                    logger.warning(f"RemoteOK returned HTTP {resp.status_code}")
+                    return []
+
+                data = resp.json()
+                # First element is metadata; skip it
+                raw_jobs = data[1:] if len(data) > 1 else []
+                query_words = query.lower().split()
+                filtered = [
+                    j for j in raw_jobs
+                    if isinstance(j, dict) and all(
+                        word in (j.get("position", "") + " " + j.get("description", "")).lower()
+                        for word in query_words
+                    )
+                ]
+                logger.info(f"RemoteOK: {len(raw_jobs)} total, {len(filtered)} matched '{query}'")
+                return [self._map_remoteok_job(j) for j in filtered[:limit]]
+
+        except Exception as e:
+            logger.error(f"RemoteOK scraping failed: {e}")
+            return []
+
+    @staticmethod
+    def _map_remoteok_job(j: dict) -> Dict[str, Any]:
+        """Map a RemoteOK API job to our standard format."""
+        desc_html = j.get("description", "")
+        desc_text = _strip_tags(desc_html) if desc_html else ""
+        return {
+            "external_id": f"remoteok-{j.get('id', '')}",
+            "title": j.get("position", ""),
+            "company": j.get("company", "Unknown"),
+            "url": j.get("url", j.get("apply_url", "")),
+            "location": j.get("location", "Remote"),
+            "work_type": "remote",
+            "is_easy_apply": False,
+            "apply_url": j.get("apply_url", j.get("url", "")),
+            "description": desc_text,
+            "description_html": desc_html,
+            "source": "remoteok",
+            "scraped_at": datetime.now(),
+        }
+
+    # --- Himalayas ---
+
+    async def _scrape_himalayas(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Fetch jobs from Himalayas' free public API (server-side search)."""
+        logger.info(f"Himalayas API: searching for '{query}'")
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
+                resp = await client.get(
+                    self.HIMALAYAS_API,
+                    params={"limit": min(limit * 2, 50), "query": query},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"Himalayas returned HTTP {resp.status_code}")
+                    return []
+
+                data = resp.json()
+                raw_jobs = data.get("jobs", [])
+                logger.info(f"Himalayas returned {len(raw_jobs)} jobs")
+                return [self._map_himalayas_job(j) for j in raw_jobs[:limit]]
+
+        except Exception as e:
+            logger.error(f"Himalayas scraping failed: {e}")
+            return []
+
+    @staticmethod
+    def _map_himalayas_job(j: dict) -> Dict[str, Any]:
+        """Map a Himalayas API job to our standard format."""
+        desc_text = j.get("description", "")
+        return {
+            "external_id": f"himalayas-{j.get('id', '')}",
+            "title": j.get("title", ""),
+            "company": j.get("companyName", "Unknown"),
+            "url": j.get("applicationLink", j.get("url", "")),
+            "location": j.get("location", "Remote"),
+            "work_type": "remote",
+            "is_easy_apply": False,
+            "apply_url": j.get("applicationLink", ""),
+            "description": desc_text,
+            "description_html": "",
+            "source": "himalayas",
+            "scraped_at": datetime.now(),
+        }

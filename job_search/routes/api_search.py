@@ -242,6 +242,10 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int = Non
                         },
                     )
 
+                    if not found_jobs and hasattr(web_scraper, '_last_warnings'):
+                        for w in web_scraper._last_warnings:
+                            logger.warning(f"[WEB] {w}")
+
                     for job_data in found_jobs:
                         try:
                             if not job_data.get("title"):

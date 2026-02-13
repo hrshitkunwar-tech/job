@@ -206,7 +206,7 @@
                     <input type="hidden" name="custom_portal_urls" id="custom-portal-urls-hidden">
                 </div>
 
-                <p class="text-[10px] text-indigo-400 mt-2 font-medium italic">* LinkedIn/Indeed need login. <b>Web</b> works instantly — no login required.</p>
+                <p class="text-[10px] text-indigo-400 mt-2 font-medium italic">* LinkedIn/Indeed need login. <b>Web</b> searches free remote-job boards instantly — no login required. Best for remote/global roles.</p>
             </div>
 
             <!-- Filters -->
@@ -753,7 +753,16 @@
             }
         }
 
-        completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
+        if (finalCount === 0) {
+            const selectedPortals = Array.from(document.querySelectorAll('input[name="portals"]:checked')).map(cb => cb.value);
+            if (selectedPortals.includes('web')) {
+                completionMessage.innerHTML = `No jobs found for "${keywords}". <span class="text-sm text-gray-600">The Web portal searches remote-job boards (Remotive, RemoteOK, Arbeitnow, Himalayas) which focus on remote/global positions. For location-specific results, try the <b>LinkedIn</b> portal.</span>`;
+            } else {
+                completionMessage.innerHTML = `Found 0 jobs. <a href="${url}" class="underline font-medium">Try a different search →</a>`;
+            }
+        } else {
+            completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
+        }
         completionDiv.classList.remove('hidden');
 
         // Auto-dismiss after 30 seconds (increased from 10)
