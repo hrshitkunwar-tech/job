@@ -57,5 +57,10 @@ test_output*.log
 test_google_*.py
 data/*.stable_backup
 
+# Debug artifacts
+data/debug_artifacts/
+data/server.log
+data/server_stdout.log
+
 # Logs
 *.log

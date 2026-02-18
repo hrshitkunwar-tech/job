@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Optional
 
 import logging
+import io
+import contextlib
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -10,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path("job_search/templates/resume_templates")
 OUTPUT_DIR = Path("job_search/static/generated")
+_WEASY_CHECKED = False
+_WEASY_HTML_CLASS = None
+_WEASY_ERROR = None
+_PDF_BACKEND_LOGGED = False
 
 
 class ResumeGenerator:
@@ -23,6 +29,7 @@ class ResumeGenerator:
         resume_data: dict,
         template_name: str = "default",
         output_filename: Optional[str] = None,
+        require_pdf: bool = True,
     ) -> Path:
         """Generate a PDF resume from structured data."""
         if not output_filename:
@@ -35,7 +42,14 @@ class ResumeGenerator:
         try:
             self._html_to_pdf(html_content, output_path)
         except Exception as e:
-            logger.warning(f"WeasyPrint PDF generation failed: {e}. Saving HTML instead.")
+            global _PDF_BACKEND_LOGGED
+            if not _PDF_BACKEND_LOGGED:
+                logger.debug(
+                    f"WeasyPrint PDF generation unavailable (missing system deps). Reason: {e}"
+                )
+                _PDF_BACKEND_LOGGED = True
+            if require_pdf:
+                raise
             html_path = output_path.with_suffix(".html")
             html_path.write_text(html_content)
             return html_path
@@ -51,8 +65,30 @@ class ResumeGenerator:
             return self._inline_template(resume_data)
 
     def _html_to_pdf(self, html_content: str, output_path: Path) -> None:
-        from weasyprint import HTML
-        HTML(string=html_content).write_pdf(str(output_path))
+        html_class = self._get_weasy_html_class()
+        if not html_class:
+            raise RuntimeError(_WEASY_ERROR or "WeasyPrint backend unavailable")
+        html_class(string=html_content).write_pdf(str(output_path))
+
+    @staticmethod
+    def _get_weasy_html_class():
+        """Load WeasyPrint once and suppress noisy stderr banners when unavailable."""
+        global _WEASY_CHECKED, _WEASY_HTML_CLASS, _WEASY_ERROR
+        if _WEASY_CHECKED:
+            return _WEASY_HTML_CLASS
+
+        _WEASY_CHECKED = True
+        sink = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(sink), contextlib.redirect_stdout(sink):
+                from weasyprint import HTML  # type: ignore
+            _WEASY_HTML_CLASS = HTML
+            _WEASY_ERROR = None
+            return _WEASY_HTML_CLASS
+        except Exception as e:
+            _WEASY_HTML_CLASS = None
+            _WEASY_ERROR = str(e)
+            return None
 
     def _inline_template(self, data: dict) -> str:
         """Fallback HTML template when template file is missing."""

@@ -85,6 +85,84 @@
         </div>
     </div>
 
+    <!-- Application Preferences -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Application Preferences</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            These answers are reused by automation for screening questions (salary, notice period, sponsorship, relocation).
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Current CTC (LPA)</label>
+                <input type="number" step="0.1" name="current_ctc_lpa"
+                       value="{{ profile.current_ctc_lpa if profile and profile.current_ctc_lpa is not none else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., 27">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Expected CTC (LPA)</label>
+                <input type="number" step="0.1" name="expected_ctc_lpa"
+                       value="{{ profile.expected_ctc_lpa if profile and profile.expected_ctc_lpa is not none else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., 40">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Notice Period (Days)</label>
+                <input type="number" name="notice_period_days"
+                       value="{{ profile.notice_period_days if profile and profile.notice_period_days is not none else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., 0">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Can Join Immediately</label>
+                <select name="can_join_immediately" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="" {% if not profile or profile.can_join_immediately is none %}selected{% endif %}>Not set</option>
+                    <option value="true" {% if profile and profile.can_join_immediately == true %}selected{% endif %}>Yes</option>
+                    <option value="false" {% if profile and profile.can_join_immediately == false %}selected{% endif %}>No</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Willing to Relocate</label>
+                <select name="willing_to_relocate" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="" {% if not profile or profile.willing_to_relocate is none %}selected{% endif %}>Not set</option>
+                    <option value="true" {% if profile and profile.willing_to_relocate == true %}selected{% endif %}>Yes</option>
+                    <option value="false" {% if profile and profile.willing_to_relocate == false %}selected{% endif %}>No</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Requires Sponsorship</label>
+                <select name="requires_sponsorship" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="" {% if not profile or profile.requires_sponsorship is none %}selected{% endif %}>Not set</option>
+                    <option value="true" {% if profile and profile.requires_sponsorship == true %}selected{% endif %}>Yes</option>
+                    <option value="false" {% if profile and profile.requires_sponsorship == false %}selected{% endif %}>No</option>
+                </select>
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Work Authorization</label>
+                <input type="text" name="work_authorization"
+                       value="{{ profile.work_authorization if profile and profile.work_authorization else '' }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                       placeholder="e.g., Authorized to work in India without sponsorship">
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Automation Question Queue</h2>
+        <p class="text-sm text-gray-600 mb-3">
+            These questions are learned from failed/skipped automation scenarios. Answering them improves auto-apply completion.
+        </p>
+        <div id="application-questions" class="text-sm text-gray-700">Loading...</div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Automation Learning Insights</h2>
+        <p class="text-sm text-gray-600 mb-3">
+            Learned from prior submissions and blockers. This memory is reused automatically in future applications.
+        </p>
+        <div id="automation-learning" class="text-sm text-gray-700">Loading...</div>
+    </div>
+
     <!-- Save -->
     <div class="flex justify-between items-center">
         <button type="submit"
@@ -108,6 +186,12 @@ document.getElementById('profile-form')?.addEventListener('submit', async (e) =>
     const form = e.target;
     const status = document.getElementById('save-status');
 
+    const parseOptionalBool = (value) => {
+        if (value === 'true') return true;
+        if (value === 'false') return false;
+        return null;
+    };
+
     const data = {
         full_name: form.full_name.value,
         email: form.email.value,
@@ -120,6 +204,13 @@ document.getElementById('profile-form')?.addEventListener('submit', async (e) =>
         target_roles: form.target_roles.value ? form.target_roles.value.split(',').map(s => s.trim()).filter(Boolean) : [],
         target_locations: form.target_locations.value ? form.target_locations.value.split(',').map(s => s.trim()).filter(Boolean) : [],
         min_salary: form.min_salary.value ? parseInt(form.min_salary.value) : null,
+        current_ctc_lpa: form.current_ctc_lpa.value ? parseFloat(form.current_ctc_lpa.value) : null,
+        expected_ctc_lpa: form.expected_ctc_lpa.value ? parseFloat(form.expected_ctc_lpa.value) : null,
+        notice_period_days: form.notice_period_days.value ? parseInt(form.notice_period_days.value) : null,
+        can_join_immediately: parseOptionalBool(form.can_join_immediately.value),
+        willing_to_relocate: parseOptionalBool(form.willing_to_relocate.value),
+        requires_sponsorship: parseOptionalBool(form.requires_sponsorship.value),
+        work_authorization: form.work_authorization.value || null,
     };
 
     const res = await fetch('/api/profile', {
@@ -155,5 +246,74 @@ async function importFromResume() {
         alert('Failed to import from resume');
     }
 }
+
+async function loadApplicationQuestions() {
+    const container = document.getElementById('application-questions');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/profile/application-questions');
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        const questions = data.questions || [];
+        if (!questions.length) {
+            container.textContent = 'No outstanding automation questions right now.';
+            return;
+        }
+        container.innerHTML = `<ul class="list-disc pl-5 space-y-2">${questions.slice(0, 12).map((q) => {
+            const meta = [q.category, q.domain].filter(Boolean).join(' | ');
+            return `<li><div>${q.question}</div><div class="text-xs text-gray-500 mt-1">${meta || q.reason || ''}</div></li>`;
+        }).join('')}</ul>`;
+    } catch {
+        container.textContent = 'Could not load automation questions right now.';
+    }
+}
+
+async function loadAutomationLearning() {
+    const container = document.getElementById('automation-learning');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/profile/automation-learning');
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        if (!data.enabled) {
+            container.textContent = 'Learning insights will appear after automation runs.';
+            return;
+        }
+        const totals = data.totals || {};
+        const blockers = data.top_blockers || [];
+        const missing = data.top_missing_inputs || [];
+        const domains = data.top_domain_outcomes || [];
+        container.innerHTML = `
+            <div class="mb-3 text-xs text-gray-600">
+                Runs: ${totals.runs || 0} | Submitted: ${totals.submitted || 0} | Reviewed: ${totals.reviewed || 0} | Failed: ${totals.failed || 0}
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                    <div class="font-medium text-gray-800 mb-1">Top Blockers</div>
+                    <ul class="list-disc pl-5 space-y-1">
+                        ${(blockers.length ? blockers : [{key:'None', count:0}]).slice(0, 5).map(item => `<li>${item.key} (${item.count})</li>`).join('')}
+                    </ul>
+                </div>
+                <div>
+                    <div class="font-medium text-gray-800 mb-1">Top Missing Inputs</div>
+                    <ul class="list-disc pl-5 space-y-1">
+                        ${(missing.length ? missing : [{key:'None', count:0}]).slice(0, 5).map(item => `<li>${item.key} (${item.count})</li>`).join('')}
+                    </ul>
+                </div>
+                <div>
+                    <div class="font-medium text-gray-800 mb-1">Top Domains</div>
+                    <ul class="list-disc pl-5 space-y-1">
+                        ${(domains.length ? domains : [{domain:'None', runs:0, submitted:0}]).slice(0, 5).map(item => `<li>${item.domain} (runs ${item.runs}, submitted ${item.submitted})</li>`).join('')}
+                    </ul>
+                </div>
+            </div>
+        `;
+    } catch {
+        container.textContent = 'Could not load automation learning insights right now.';
+    }
+}
+
+loadApplicationQuestions();
+loadAutomationLearning();
 </script>
 {% endblock %}

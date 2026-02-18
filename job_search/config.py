@@ -22,11 +22,17 @@ class Settings(BaseSettings):
     # LinkedIn
     linkedin_email: Optional[str] = None
     linkedin_password: Optional[str] = None
-    browser_headless: bool = True
+    # Default to headed mode because LinkedIn/ATS portals often block headless browsers
+    # and because interactive challenges/login may be required.
+    browser_headless: bool = False
     scrape_delay_min: float = 2.0
     scrape_delay_max: float = 7.0
     apply_delay_min: float = 30.0
     apply_delay_max: float = 90.0
+    external_challenge_assist: bool = True
+    external_challenge_timeout_seconds: int = 240
+    # Keep resume upload reliable by default: use user's original PDF unless explicitly enabled.
+    resume_tailoring_enabled: bool = False
 
     # Matching
     min_match_score: float = 50.0
