@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# Database
+data/*.db
+*.db
+
+# Browser state (contains session cookies)
+data/browser_state/
+
+# Uploaded and generated files
+job_search/static/uploads/*
+job_search/static/generated/*
+!job_search/static/uploads/.gitkeep
+!job_search/static/generated/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Agent/tool artifacts
+.agents/
+.agent/
+ccpm/
+
+# Session artifacts
+DEBUG_SESSION_REPORT.md
+GOOGLE_CAREERS_*.md
+PROGRESS_TRACKING_AND_SUPABASE.md
+test_output*.log
+test_google_*.py
+data/*.stable_backup
+
+# Logs
+*.log

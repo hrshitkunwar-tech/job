@@ -1,0 +1,969 @@
+{% extends "base.html" %}
+{% block title %}Search - Job Search{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Job Search</h1>
+
+<!-- Search Progress Indicator -->
+<div id="search-progress"
+    class="hidden bg-gradient-to-r from-indigo-50 to-blue-50 border-l-4 border-indigo-500 rounded-lg shadow-lg p-6 mb-6">
+    <div class="flex items-start justify-between">
+        <div class="flex-1">
+            <div class="flex items-center mb-3">
+                <svg class="animate-spin h-5 w-5 text-indigo-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none"
+                    viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                    </path>
+                </svg>
+                <h3 class="text-lg font-semibold text-gray-900" id="progress-title">Search in Progress...</h3>
+            </div>
+            <p class="text-sm text-gray-700 mb-2" id="progress-status">Initializing search...</p>
+            <div class="flex items-center gap-4 text-sm">
+                <span class="font-medium text-indigo-600" id="jobs-found-count">0 jobs found</span>
+                <span class="text-gray-500" id="current-location"></span>
+            </div>
+            <div class="mt-3 bg-white rounded-full h-2 overflow-hidden">
+                <div id="progress-bar" class="bg-indigo-600 h-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+        </div>
+        <div class="flex gap-2 items-center">
+            <button onclick="stopSearch()"
+                class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 font-medium">
+                Stop Search
+            </button>
+            <button onclick="dismissProgress()" class="text-gray-400 hover:text-gray-600">
+                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd"
+                        d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                        clip-rule="evenodd"></path>
+                </svg>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Completion Notification -->
+<div id="completion-notification" class="hidden bg-green-50 border-l-4 border-green-500 rounded-lg shadow-lg p-6 mb-6">
+    <div class="flex items-start justify-between">
+        <div class="flex items-center">
+            <svg class="h-6 w-6 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <div>
+                <h3 class="text-lg font-semibold text-green-900">Search Complete!</h3>
+                <p class="text-sm text-green-700 mt-1" id="completion-message">Found 0 jobs. <a href="/jobs"
+                        class="underline font-medium">View all jobs →</a></p>
+            </div>
+        </div>
+        <button onclick="dismissCompletion()" class="text-green-400 hover:text-green-600">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clip-rule="evenodd"></path>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<!-- New Search -->
+<div class="bg-white rounded-lg shadow p-6 mb-8">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Run New Search</h2>
+    <form id="search-form" class="space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Job Role Section -->
+            <div class="space-y-1">
+                <label class="block text-sm font-semibold text-gray-700">Job Role (press Enter to add)</label>
+                <div class="border border-gray-300 rounded-md p-2 min-h-[42px] bg-gray-50 flex flex-wrap gap-2 items-center focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500 transition-all"
+                    id="role-container" onclick="document.getElementById('role-input').focus()">
+                    <input type="text" id="role-input" class="flex-1 min-w-[120px] outline-none text-sm bg-transparent"
+                        placeholder="e.g., Customer Success Manager">
+                </div>
+                <input type="hidden" name="keywords" id="roles-hidden">
+                <p class="text-xs text-gray-500">Add multiple roles like "Account Director", "Success Manager"</p>
+            </div>
+
+            <!-- Locations Section -->
+            <div class="space-y-1">
+                <label class="block text-sm font-semibold text-gray-700">Locations & Regions</label>
+                <div class="flex gap-2">
+                    <select id="location-presets"
+                        class="w-1/3 px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
+                        onchange="addLocation(this.value); this.value=''">
+                        <option value="">Quick Select...</option>
+                        <optgroup label="Countries & Regions">
+                            <option value="India">India</option>
+                            <option value="USA">United States</option>
+                            <option value="Europe">Europe</option>
+                            <option value="EMEA">EMEA</option>
+                            <option value="APAC">APAC</option>
+                            <option value="ASEAN">South East Asia</option>
+                        </optgroup>
+                        <optgroup label="Indian Cities">
+                            <option value="Bangalore">Bangalore</option>
+                            <option value="Mumbai">Mumbai</option>
+                            <option value="Delhi">Delhi</option>
+                            <option value="Gurugram">Gurugram</option>
+                            <option value="Noida">Noida</option>
+                            <option value="Hyderabad">Hyderabad</option>
+                            <option value="Pune">Pune</option>
+                            <option value="Chennai">Chennai</option>
+                        </optgroup>
+                    </select>
+                    <div class="flex-1 border border-gray-300 rounded-md p-2 min-h-[42px] bg-gray-50 flex flex-wrap gap-2 items-center"
+                        id="location-container" onclick="document.getElementById('location-input').focus()">
+                        <input type="text" id="location-input"
+                            class="flex-1 min-w-[80px] outline-none text-sm bg-transparent" placeholder="Add more...">
+                    </div>
+                </div>
+                <input type="hidden" name="locations" id="locations-hidden">
+            </div>
+
+            <!-- Portals Section -->
+            <div class="col-span-1 md:col-span-2 p-4 bg-indigo-50 rounded-lg border border-indigo-100">
+                <label class="block text-sm font-bold text-indigo-900 mb-3">Job Portals (Select to Authenticate)</label>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-4">
+                    <!-- LinkedIn -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border-2 border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-all">
+                        <input type="checkbox" name="portals" value="linkedin" class="hidden peer" checked
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-indigo-600">LinkedIn</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
+                    <!-- Indeed -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
+                        <input type="checkbox" name="portals" value="indeed" class="hidden peer"
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-indigo-600">Indeed</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
+                    <!-- Naukri -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
+                        <input type="checkbox" name="portals" value="naukri" class="hidden peer"
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-indigo-600">Naukri</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
+                    <!-- Career Site -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
+                        <input type="checkbox" name="portals" value="career_site" class="hidden peer"
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-indigo-600">Career Sites</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
+                    <!-- Custom URL -->
+                    <label
+                        class="relative flex flex-col items-center p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
+                        <input type="checkbox" name="portals" value="web_url" class="hidden peer"
+                            onchange="toggleCustomUrlInput()">
+                        <span class="text-xs font-semibold peer-checked:text-indigo-600">Custom URL</span>
+                        <div class="absolute top-1 right-1 hidden peer-checked:block">
+                            <div class="w-2 h-2 bg-indigo-600 rounded-full shadow-sm"></div>
+                        </div>
+                    </label>
+                </div>
+
+                <!-- Custom URL / Career Site Input Container -->
+                <div id="custom-url-container"
+                    class="hidden space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label class="block text-xs font-bold text-indigo-800">Paste Career Site or Custom Portal
+                        URL(s)</label>
+                    <div class="flex gap-2">
+                        <input type="url" id="custom-portal-url"
+                            class="flex-1 px-3 py-2 border border-indigo-200 rounded-md text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                            placeholder="https://company.greenhouse.io/careers/...">
+                        <button type="button" onclick="addCustomPortalUrl()"
+                            class="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-md hover:bg-indigo-700 transition-colors">
+                            Add URL
+                        </button>
+                    </div>
+                    <div id="custom-url-tags" class="flex flex-wrap gap-2 mt-2">
+                        <!-- Dynamic Tags -->
+                    </div>
+                    <input type="hidden" name="custom_portal_urls" id="custom-portal-urls-hidden">
+                </div>
+
+                <p class="text-[10px] text-indigo-400 mt-2 font-medium italic">* Selected portals will open for
+                    authentication if session expired</p>
+            </div>
+
+            <!-- Filters -->
+            <div>
+                <label class="block text-sm font-semibold text-gray-700">Work Types</label>
+                <div class="mt-2 flex flex-wrap gap-4">
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="work_types" value="remote" class="rounded text-indigo-600">
+                        <span class="ml-2 text-sm">Remote</span>
+                    </label>
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="work_types" value="hybrid" class="rounded text-indigo-600">
+                        <span class="ml-2 text-sm">Hybrid</span>
+                    </label>
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="work_types" value="onsite" class="rounded text-indigo-600">
+                        <span class="ml-2 text-sm">On-site</span>
+                    </label>
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-semibold text-gray-700">Date Posted</label>
+                <select name="date_posted" class="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="">Any time</option>
+                    <option value="past_24h">Past 24 hours</option>
+                    <option value="past_week">Past week</option>
+                    <option value="past_month">Past month</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-sm font-semibold text-gray-700">Max Results</label>
+                <select name="max_results" class="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                    <option value="5" selected>5 jobs</option>
+                    <option value="10">10 jobs</option>
+                    <option value="25">25 jobs</option>
+                    <option value="50">50 jobs</option>
+                    <option value="100">100 jobs</option>
+                </select>
+            </div>
+
+            <div class="flex items-center gap-2 pt-6">
+                <input type="checkbox" id="easy_apply" name="easy_apply_only" checked class="rounded text-indigo-600">
+                <label for="easy_apply" class="text-sm font-medium text-gray-700">Easy Apply only</label>
+            </div>
+        </div>
+        <div class="flex gap-3">
+            <button type="submit"
+                class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
+                Search Now
+            </button>
+            <button type="button" onclick="saveSearch()"
+                class="px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50">
+                Save Search
+            </button>
+        </div>
+    </form>
+    <div id="search-status" class="mt-3 text-sm hidden"></div>
+</div>
+
+<!-- Saved Searches -->
+<div>
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Saved Searches</h2>
+        <div class="text-xs text-gray-500">
+            <svg class="inline w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clip-rule="evenodd"></path>
+            </svg>
+            Tip: Click "Save Search" button above to save your search criteria for later
+        </div>
+    </div>
+    <div class="space-y-3">
+        {% for query in queries %}
+        <div class="bg-white rounded-lg shadow p-4 cursor-pointer hover:bg-gray-50 transition-colors border border-gray-100"
+            onclick="toggleSearchDetails('{{ query.id }}')">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="font-medium text-gray-900 flex items-center gap-2">
+                        {{ query.name }}
+                        <span class="text-xs font-normal text-gray-400 bg-gray-100 px-2 rounded-full">ID: {{ query.id
+                            }}</span>
+                    </h3>
+                    <p class="text-sm text-gray-500 mt-1">
+                        {{ query.keywords }}
+                        {% if query.location %} &middot; {{ query.location }}{% endif %}
+                    </p>
+                </div>
+                <div class="flex gap-2" onclick="event.stopPropagation()">
+                    <button onclick="runSavedSearch({{ query.id }})"
+                        class="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded hover:bg-indigo-700">Run</button>
+                    <button onclick="deleteSearch({{ query.id }})"
+                        class="px-3 py-1 text-xs font-medium bg-white text-red-600 border border-red-200 rounded hover:bg-red-50">Delete</button>
+                </div>
+            </div>
+
+            <!-- Hidden Details -->
+            <div id="details-{{ query.id }}"
+                class="hidden mt-3 pt-3 border-t border-gray-100 text-xs text-gray-600 grid grid-cols-2 gap-y-2 gap-x-4">
+                <div class="col-span-2">
+                    <span class="font-semibold text-gray-700">Location:</span> {{ query.location or query.locations or
+                    "Global" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Work Type:</span> {{ query.work_type or query.work_types
+                    or "Any" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Experience:</span> {{ query.experience_levels or "Any" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Date Posted:</span> {{ query.date_posted or "Any time" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Easy Apply:</span> {{ "Yes" if query.easy_apply_only else
+                    "No" }}
+                </div>
+                <div>
+                    <span class="font-semibold text-gray-700">Results:</span> {{ query.results_count }}
+                </div>
+                <div class="col-span-2 text-gray-400 mt-1">
+                    Last run: {{ query.last_run_at.strftime('%Y-%m-%d %H:%M') if query.last_run_at else 'Never' }}
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="bg-white rounded-lg shadow p-6 text-center text-gray-500">
+            No saved searches. Create one above.
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Run History -->
+<div class="mt-8 pt-8 border-t border-gray-200">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Search Execution History</h2>
+        <button onclick="stopAllSearches()"
+            class="text-xs px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 border border-red-200 font-medium transition-colors">STOP
+            ALL ACTIVE SEARCHES</button>
+    </div>
+    <p class="text-sm text-gray-500 mb-4">Log of all automatic search runs. Click "View Results" to see jobs from a
+        specific run.</p>
+
+    <div class="space-y-3">
+        {% for run in run_history %}
+        <div class="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:bg-white hover:shadow-sm transition-all">
+            <div class="flex justify-between items-start">
+                <div>
+                    <h3 class="font-medium text-gray-900 text-sm flex items-center gap-2">
+                        {{ run.name }}
+                        <span class="text-xs text-gray-400 bg-gray-100 px-1 rounded">ID: {{ run.id }}</span>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Filters: {{ run.keywords }}
+                        {% if run.locations %} · {{ run.locations }}{% endif %}
+                        {% if run.work_types %} · {{ run.work_types }}{% endif %}
+                    </p>
+                    <div class="mt-2 text-xs text-gray-600 flex gap-4">
+                        <span>Date: {{ run.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <!-- Results count might be 0 if scraping timed out, but View Results works -->
+                        <span
+                            class="font-medium {{ 'text-green-600' if run.results_count > 0 else 'text-gray-400' }}">Found:
+                            {{ run.results_count or 'Checking...' }} jobs</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <a href="/jobs?search_id={{ run.id }}"
+                        class="px-3 py-1 text-xs font-medium bg-white text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-50">View
+                        Results</a>
+                    <button onclick="deleteSearch({{ run.id }})"
+                        class="px-2 py-1 text-xs text-gray-400 hover:text-red-600 border border-transparent hover:border-red-100 rounded">Delete
+                        Log</button>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="bg-gray-50 rounded-lg p-6 text-center text-gray-500 text-sm border border-dashed border-gray-300">
+            No execution history found.
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Location tags management
+    // Location tags management
+    function toggleSearchDetails(id) {
+        const el = document.getElementById(`details-${id}`);
+        if (el) {
+            el.classList.toggle('hidden');
+        }
+    }
+
+    let currentSearchId = null;
+    let currentDbSearchId = null;
+    let searchStartTime = null;
+
+    // Role tags management
+    const roles = [];
+    const roleInput = document.getElementById('role-input');
+    const roleContainer = document.getElementById('role-container');
+    const rolesHidden = document.getElementById('roles-hidden');
+
+    function addRole(value) {
+        const trimmed = value.trim();
+        if (trimmed && !roles.includes(trimmed)) {
+            roles.push(trimmed);
+            renderRoleTags();
+            roleInput.value = '';
+            updateRolesHidden();
+        }
+    }
+
+    function removeRole(index) {
+        roles.splice(index, 1);
+        renderRoleTags();
+        updateRolesHidden();
+    }
+
+    function updateRolesHidden() {
+        rolesHidden.value = JSON.stringify(roles);
+    }
+
+    function renderRoleTags() {
+        const existingTags = roleContainer.querySelectorAll('.role-tag');
+        existingTags.forEach(tag => tag.remove());
+
+        roles.forEach((role, index) => {
+            const tag = document.createElement('span');
+            tag.className = 'role-tag inline-flex items-center gap-1 px-2 py-1 bg-indigo-600 text-white rounded text-sm font-medium';
+            tag.innerHTML = `
+                ${role}
+                <button type="button" onclick="removeRole(${index})" class="hover:text-indigo-200">
+                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                    </svg>
+                </button>
+            `;
+            roleContainer.insertBefore(tag, roleInput);
+        });
+    }
+
+    roleInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addRole(roleInput.value);
+        } else if (e.key === 'Backspace' && !roleInput.value && roles.length > 0) {
+            removeRole(roles.length - 1);
+        }
+    });
+
+    window.removeRole = removeRole;
+
+    // Location tags management
+    const locations = [];
+    const locationInput = document.getElementById('location-input');
+    const locationContainer = document.getElementById('location-container');
+    const locationsHidden = document.getElementById('locations-hidden');
+
+    function addLocation(value) {
+        const trimmed = value.trim();
+        if (trimmed && !locations.includes(trimmed)) {
+            locations.push(trimmed);
+            renderLocationTags();
+            if (locationInput) locationInput.value = '';
+            locationsHidden.value = JSON.stringify(locations);
+        }
+    }
+
+    function removeLocation(index) {
+        locations.splice(index, 1);
+        renderLocationTags();
+        locationsHidden.value = JSON.stringify(locations);
+    }
+
+    function renderLocationTags() {
+        const existingTags = locationContainer.querySelectorAll('.location-tag');
+        existingTags.forEach(tag => tag.remove());
+
+        locations.forEach((loc, index) => {
+            const tag = document.createElement('span');
+            tag.className = 'location-tag inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 text-indigo-800 rounded text-sm font-medium';
+            tag.innerHTML = `
+                ${loc}
+                <button type="button" onclick="removeLocation(${index})" class="hover:text-indigo-900">
+                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                    </svg>
+                </button>
+            `;
+            locationContainer.insertBefore(tag, locationInput);
+        });
+    }
+
+    locationInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addLocation(locationInput.value);
+        } else if (e.key === 'Backspace' && !locationInput.value && locations.length > 0) {
+            removeLocation(locations.length - 1);
+        }
+    });
+
+    window.removeLocation = removeLocation;
+    window.addLocation = addLocation;
+
+    // Custom Portal URL Management
+    const customPortalUrls = [];
+    const customUrlInput = document.getElementById('custom-portal-url');
+    const customUrlContainer = document.getElementById('custom-url-container');
+    const customUrlTags = document.getElementById('custom-url-tags');
+    const customUrlsHidden = document.getElementById('custom-portal-urls-hidden');
+
+    function toggleCustomUrlInput() {
+        const portals = Array.from(document.querySelectorAll('input[name="portals"]:checked'))
+            .map(cb => cb.value);
+
+        if (portals.includes('career_site') || portals.includes('web_url')) {
+            customUrlContainer.classList.remove('hidden');
+        } else {
+            customUrlContainer.classList.add('hidden');
+        }
+    }
+
+    function addCustomPortalUrl() {
+        const value = customUrlInput.value.trim();
+        if (value && !customPortalUrls.includes(value)) {
+            try {
+                new URL(value); // Validate URL
+                customPortalUrls.push(value);
+                renderCustomUrlTags();
+                customUrlInput.value = '';
+                updateCustomUrlsHidden();
+            } catch (e) {
+                alert('Please enter a valid URL including http:// or https://');
+            }
+        }
+    }
+
+    function removeCustomPortalUrl(index) {
+        customPortalUrls.splice(index, 1);
+        renderCustomUrlTags();
+        updateCustomUrlsHidden();
+    }
+
+    function updateCustomUrlsHidden() {
+        customUrlsHidden.value = JSON.stringify(customPortalUrls);
+    }
+
+    function renderCustomUrlTags() {
+        customUrlTags.innerHTML = '';
+        customPortalUrls.forEach((url, index) => {
+            const domain = new URL(url).hostname;
+            const tag = document.createElement('div');
+            tag.className = 'inline-flex items-center gap-2 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-md text-xs font-medium border border-indigo-200';
+            tag.innerHTML = `
+                <span title="${url}">${domain}</span>
+                <button type="button" onclick="removeCustomPortalUrl(${index})" class="hover:text-indigo-900">
+                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                    </svg>
+                </button>
+            `;
+            customUrlTags.appendChild(tag);
+        });
+    }
+
+    window.toggleCustomUrlInput = toggleCustomUrlInput;
+    window.addCustomPortalUrl = addCustomPortalUrl;
+    window.removeCustomPortalUrl = removeCustomPortalUrl;
+
+    document.getElementById('search-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+
+        // Final check for inputs
+        if (roleInput.value) addRole(roleInput.value);
+        if (locationInput.value) addLocation(locationInput.value);
+        if (customUrlInput.value) addCustomPortalUrl();
+
+        if (roles.length === 0) {
+            alert('Please add at least one Job Role');
+            return;
+        }
+
+        // Collect portals
+        const portals = Array.from(form.querySelectorAll('input[name="portals"]:checked'))
+            .map(cb => cb.value);
+
+        if (portals.length === 0) {
+            alert('Please select at least one Job Portal');
+            return;
+        }
+
+        // Collect multiple work types
+        const workTypes = Array.from(form.querySelectorAll('input[name="work_types"]:checked'))
+            .map(cb => cb.value);
+
+        const data = {
+            keywords: roles, // list
+            locations: locations.length > 0 ? locations : null,
+            work_types: workTypes.length > 0 ? workTypes : null,
+            portals: portals,
+            custom_portal_urls: customPortalUrls.length > 0 ? customPortalUrls : null,
+            date_posted: form.date_posted.value || null,
+            easy_apply_only: form.easy_apply_only.checked,
+            limit: parseInt(form.max_results?.value || 5),
+        };
+
+        // Show progress indicator
+        const progressDiv = document.getElementById('search-progress');
+        const completionDiv = document.getElementById('completion-notification');
+        const progressStatus = document.getElementById('progress-status');
+        const jobsFoundCount = document.getElementById('jobs-found-count');
+        const progressBar = document.getElementById('progress-bar');
+
+        progressDiv.classList.remove('hidden');
+        completionDiv.classList.add('hidden');
+
+        progressStatus.textContent = `Scraping: ${data.keywords.join(', ')} on ${data.portals.join(', ')}...`;
+        jobsFoundCount.textContent = '0 jobs found';
+        progressBar.style.width = '5%';
+
+        const res = await fetch('/api/search/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+
+        if (res.ok) {
+            const result = await res.json();
+            currentSearchId = result.search_id;
+            currentDbSearchId = result.db_search_id;
+            searchStartTime = new Date().toISOString();
+            // Start polling for progress
+            startProgressPolling(data.keywords, data.limit);
+        } else {
+            progressDiv.classList.add('hidden');
+            status.textContent = 'Failed to start search';
+            status.className = 'mt-3 text-sm text-red-600';
+        }
+    });
+
+    let progressInterval = null;
+    let lastJobCount = 0;
+
+    function startProgressPolling(keywords, targetLimit) {
+        lastJobCount = 0;
+        let pollCount = 0;
+        const maxPolls = 120; // 10 minutes max (5 sec intervals)
+
+        progressInterval = setInterval(async () => {
+            pollCount++;
+
+            try {
+                // Fetch current job count with cache-buster
+                let url = `/api/jobs?per_page=1&_t=${Date.now()}`;
+                if (currentDbSearchId) {
+                    url += `&search_id=${currentDbSearchId}`;
+                }
+                const response = await fetch(url);
+                const data = await response.json();
+                const currentCount = data.total;
+
+                // Update UI
+                document.getElementById('jobs-found-count').textContent = `${currentCount} jobs found`;
+
+                // Update progress bar (estimate based on target)
+                const progress = Math.min((currentCount / targetLimit) * 100, 95);
+                document.getElementById('progress-bar').style.width = `${progress}%`;
+
+                // Check if target reached
+                if (currentCount >= targetLimit && currentCount > 0) {
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount, keywords);
+                    return;
+                }
+
+                // Check if new jobs were found
+                if (currentCount > lastJobCount) {
+                    lastJobCount = currentCount;
+                    pollCount = 0; // Reset poll count when new jobs found
+                    document.getElementById('progress-status').textContent = `Found ${currentCount} jobs so far...`;
+                } else if (pollCount > 24) {
+                    // No new jobs for 2 minutes (24 polls × 5 seconds), assume complete
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount, keywords);
+                }
+
+                // Stop after max time (10 minutes)
+                if (pollCount >= 300) { // 300 polls * 2s = 600s = 10m
+                    clearInterval(progressInterval);
+                    showCompletion(currentCount, keywords);
+                }
+            } catch (error) {
+                console.error('Progress polling error:', error);
+            }
+        }, 2000); // Poll every 2 seconds
+    }
+
+    async function showCompletion(jobCount, keywords) {
+        // Final check to catch any last-second saves
+        let finalCount = jobCount;
+        try {
+            let url = `/api/jobs?per_page=1&_t=${Date.now()}`;
+            if (currentDbSearchId) url += `&search_id=${currentDbSearchId}`;
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.total > finalCount) finalCount = data.total;
+        } catch (e) { }
+
+        const progressDiv = document.getElementById('search-progress');
+        const progressBar = document.getElementById('progress-bar');
+
+        // Keep progress visible for a moment
+        progressBar.style.width = '100%';
+        document.getElementById('progress-status').textContent = 'Search complete!';
+
+        // Hide after 3 seconds
+        setTimeout(() => {
+            progressDiv.classList.add('hidden');
+        }, 3000);
+
+        const completionDiv = document.getElementById('completion-notification');
+        const completionMessage = document.getElementById('completion-message');
+
+        // Use ID if available (most robust), fallback to date logic
+        let url = `/jobs?`;
+        if (currentDbSearchId) {
+            // Only filter by Session ID to show exactly what was scraped
+            url += `search_id=${currentDbSearchId}`;
+        } else {
+            // Fallback for untracked searches
+            url += `q=${encodeURIComponent(keywords || '')}`;
+            if (searchStartTime) {
+                url += `&scraped_after=${encodeURIComponent(searchStartTime)}`;
+            }
+        }
+
+        completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
+        completionDiv.classList.remove('hidden');
+
+        // Auto-dismiss after 30 seconds (increased from 10)
+        setTimeout(() => {
+            completionDiv.classList.add('hidden');
+        }, 30000);
+    }
+
+    function dismissProgress() {
+        document.getElementById('search-progress').classList.add('hidden');
+        if (progressInterval) {
+            clearInterval(progressInterval);
+        }
+    }
+
+    function dismissCompletion() {
+        document.getElementById('completion-notification').classList.add('hidden');
+    }
+
+    async function stopSearch() {
+        if (!currentSearchId) {
+            // If no ID but interval running, stop UI
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                document.getElementById('search-progress').classList.add('hidden');
+                return;
+            }
+            alert('No active search to stop');
+            return;
+        }
+
+        try {
+            const res = await fetch(`/api/search/stop/${currentSearchId}`, {
+                method: 'POST'
+            });
+
+            if (res.ok) {
+                if (progressInterval) clearInterval(progressInterval);
+                document.getElementById('search-progress').classList.add('hidden');
+                alert('✓ Search stopped successfully');
+                currentSearchId = null;
+            } else {
+                alert('✗ Failed to stop search');
+            }
+        } catch (error) {
+            console.error('Stop error:', error);
+            // Force UI cleanup anyway
+            if (progressInterval) clearInterval(progressInterval);
+            document.getElementById('search-progress').classList.add('hidden');
+        }
+    }
+
+    window.stopSearch = stopSearch;
+    window.dismissProgress = dismissProgress;
+    window.dismissCompletion = dismissCompletion;
+
+    async function saveSearch() {
+        const form = document.getElementById('search-form');
+        const name = prompt('Name this search:', form.keywords.value);
+        if (!name) return;
+
+        try {
+            // Collect multiple selections
+            const workTypes = Array.from(form.querySelectorAll('input[name="work_types"]:checked'))
+                .map(cb => cb.value);
+            const experienceLevels = Array.from(form.querySelectorAll('input[name="experience_levels"]:checked'))
+                .map(cb => cb.value);
+
+            const data = {
+                name: name,
+                keywords: form.keywords.value,
+                locations: locations.length > 0 ? JSON.stringify(locations) : null,
+                work_types: workTypes.length > 0 ? JSON.stringify(workTypes) : null,
+                experience_levels: experienceLevels.length > 0 ? JSON.stringify(experienceLevels) : null,
+                date_posted: form.date_posted.value || null,
+                easy_apply_only: form.easy_apply_only.checked,
+            };
+
+            console.log('Saving search:', data);
+
+            const res = await fetch('/api/search/queries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+
+            if (res.ok) {
+                alert('✓ Search saved successfully!');
+                location.reload();
+            } else {
+                const error = await res.text();
+                alert('✗ Failed to save search: ' + error);
+                console.error('Save error:', error);
+            }
+        } catch (error) {
+            alert('✗ Error saving search: ' + error.message);
+            console.error('Save error:', error);
+        }
+    }
+
+    // Make saveSearch globally accessible
+    window.saveSearch = saveSearch;
+
+    async function runSavedSearch(id) {
+        try {
+            // Get the saved search details
+            const searchRes = await fetch(`/api/search/queries/${id}`);
+            const search = await searchRes.json();
+
+            // Parse JSON fields
+            const locations = search.locations ? JSON.parse(search.locations) : null;
+            const workTypes = search.work_types ? JSON.parse(search.work_types) : null;
+            const experienceLevels = search.experience_levels ? JSON.parse(search.experience_levels) : null;
+
+            // Show progress indicator
+            const progressDiv = document.getElementById('search-progress');
+            const completionDiv = document.getElementById('completion-notification');
+            const progressStatus = document.getElementById('progress-status');
+            const jobsFoundCount = document.getElementById('jobs-found-count');
+            const progressBar = document.getElementById('progress-bar');
+
+            progressDiv.classList.remove('hidden');
+            completionDiv.classList.add('hidden');
+            progressStatus.textContent = `Searching for "${search.keywords}"...`;
+            jobsFoundCount.textContent = '0 jobs found';
+            progressBar.style.width = '10%';
+
+            // Run the search
+            const res = await fetch('/api/search/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    keywords: search.keywords,
+                    locations: locations,
+                    work_types: workTypes,
+                    experience_levels: experienceLevels,
+                    date_posted: search.date_posted,
+                    easy_apply_only: search.easy_apply_only,
+                    limit: 50,
+                    id: id
+                }),
+            });
+
+            if (res.ok) {
+                const result = await res.json();
+                currentSearchId = result.search_id;
+                currentDbSearchId = result.db_search_id;
+                searchStartTime = new Date().toISOString();
+                // Start polling for progress
+                startProgressPolling(search.keywords, 50);
+            } else {
+                progressDiv.classList.add('hidden');
+                alert('Failed to start search');
+            }
+        } catch (error) {
+            alert('Error running search: ' + error.message);
+            console.error('Run search error:', error);
+        }
+    }
+
+    async function deleteSearch(id) {
+        if (!confirm('Delete this saved search?')) return;
+        try {
+            await fetch(`/api/search/queries/${id}`, { method: 'DELETE' });
+            alert('✓ Search deleted successfully!');
+            location.reload();
+        } catch (error) {
+            alert('✗ Error deleting search: ' + error.message);
+        }
+    }
+
+    // Make functions globally accessible
+    // Check for active search on load
+    async function checkActiveSearch() {
+        try {
+            const res = await fetch('/api/search/active');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.active) {
+                    console.log('Found active search:', data);
+                    const progressDiv = document.getElementById('search-progress');
+                    if (progressDiv) {
+                        progressDiv.classList.remove('hidden');
+                        document.getElementById('progress-status').textContent = 'Continuing active search for "' + (data.keywords || 'jobs') + '"...';
+
+                        currentSearchId = data.search_id; // Local
+                        window.currentSearchId = data.search_id; // For consistency
+                        currentDbSearchId = data.db_search_id; // Local
+                        window.currentDbSearchId = data.db_search_id; // For consistency
+
+                        // Start polling with correct limit
+                        if (typeof startProgressPolling === 'function') {
+                            startProgressPolling(data.keywords, data.limit || 50);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Active check failed:', e);
+        }
+    }
+
+    // Call on load
+    document.addEventListener('DOMContentLoaded', checkActiveSearch);
+
+    window.runSavedSearch = runSavedSearch;
+    window.deleteSearch = deleteSearch;
+
+    async function stopAllSearches() {
+        if (!confirm('This will immediately HALT all running search tasks in the background. Proceed?')) return;
+        try {
+            const res = await fetch('/api/search/stop-all', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message);
+            location.reload();
+        } catch (e) {
+            alert('Failed to stop searches: ' + e);
+        }
+    }
+    window.stopAllSearches = stopAllSearches;
+</script>
+{% endblock %}
