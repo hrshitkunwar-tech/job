@@ -20,23 +20,31 @@ pytest tests/test_services.py::test_name  # single test
 
 ## Key Files
 - `run.py` — entry point
-- `job_search/app.py` — FastAPI factory
+- `job_search/app.py` — FastAPI factory (includes autonomous router on dev branch)
 - `job_search/config.py` — settings from .env
 - `job_search/database.py` — SQLAlchemy setup
-- `job_search/services/scraper.py` — LinkedIn Playwright scraper (~67KB, largest file)
+- `job_search/services/scraper.py` — Multi-API scraper (LinkedIn + Remotive + Arbeitnow + free APIs)
 - `job_search/services/job_matcher.py` — scoring engine
 - `job_search/services/resume_tailor.py` — AI resume rewriting
 - `job_search/services/applier.py` — LinkedIn auto-apply (~308KB)
+- `job_search/services/workflow_agents.py` — autonomous application workflow agents
+- `job_search/services/apply_url_resolver.py` — resolves application URLs
 - `job_search/routes/api_search.py` — search orchestration
+- `job_search/routes/api_autonomous.py` — autonomous workflow endpoints
 
 ## Architecture
-- `models/` — SQLAlchemy models (Job, Resume, Application, UserProfile, SearchQuery)
+- `models/` — SQLAlchemy models (Job, Resume, Application, UserProfile, SearchQuery, Autonomous)
 - `schemas/` — Pydantic schemas for API validation
-- `routes/` — FastAPI routers (search, resumes, applications, profile)
-- `services/` — business logic (scraper, matcher, tailor, applier, LLM client)
-- `templates/` — Jinja2 HTML (dashboard, job detail, resumes, applications, profile)
+- `routes/` — FastAPI routers (search, resumes, applications, profile, autonomous)
+- `services/` — business logic (scraper, matcher, tailor, applier, workflow agents, LLM client)
+- `templates/` — Jinja2 HTML (dashboard, job detail, resumes, applications, profile, search)
 - `static/` — CSS, JS, uploaded resumes, generated PDFs
-- `scripts/` — utility scripts (DB management, testing)
+- `scripts/` — utility scripts (DB management, testing, LinkedIn session save)
+- `tests/` — unit tests + E2E tests (Playwright)
+
+## Branches
+- `master` — stable base (initial clean commit)
+- `dev` — active development (autonomous workflows, multi-API scraping, E2E tests)
 
 ## Conventions
 - `.env` has real credentials (gitignored) — use `.env.example` as template
