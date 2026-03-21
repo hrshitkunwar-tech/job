@@ -23,6 +23,7 @@ class MatchResult:
     experience_score: float = 0.0
     location_score: float = 0.0
     keyword_score: float = 0.0
+    vibe_score: float = 0.0
     matched_skills: list[str] = field(default_factory=list)
     missing_skills: list[str] = field(default_factory=list)
     extracted_keywords: list[str] = field(default_factory=list)
@@ -32,8 +33,9 @@ class MatchResult:
 
 class JobMatcher:
     WEIGHTS = {
-        "skill": 0.45,
-        "title": 0.35,
+        "skill": 0.25,
+        "vibe": 0.35,
+        "title": 0.20,
         "experience": 0.05,
         "location": 0.05,
         "keyword": 0.10,
@@ -112,12 +114,14 @@ class JobMatcher:
         location_score = self._score_location(
             job.get("location", ""), job.get("work_type", ""), target_locations
         )
+        vibe_score = self._score_vibe(description)
 
         keywords = extract_keywords(description)
         keyword_score = self._score_keyword_overlap(keywords, user_skills)
 
         overall = (
             skill_score * self.WEIGHTS["skill"]
+            + vibe_score * self.WEIGHTS["vibe"]
             + title_score * self.WEIGHTS["title"]
             + experience_score * self.WEIGHTS["experience"]
             + location_score * self.WEIGHTS["location"]
@@ -136,6 +140,7 @@ class JobMatcher:
         return MatchResult(
             overall_score=round(overall, 1),
             skill_score=round(skill_score, 1),
+            vibe_score=round(vibe_score, 1),
             title_score=round(title_score, 1),
             experience_score=round(experience_score, 1),
             location_score=round(location_score, 1),
@@ -145,6 +150,7 @@ class JobMatcher:
             extracted_keywords=keywords[:20],
             recommendation=recommendation,
             explanation=f"Overall {recommendation.replace('_', ' ')}: {round(overall)}% match. "
+                        f"Vibe Score: {round(vibe_score, 1)}. "
                         f"{len(matched)} of your skills matched.",
         )
 
@@ -243,6 +249,31 @@ class JobMatcher:
         matched = sum(1 for kw in jd_keywords[:20] if normalize_skill(kw) in user_normalized)
         return min((matched / min(len(jd_keywords), 20)) * 100, 100.0)
 
+    def _score_vibe(self, description: str) -> float:
+        """Heuristic vibe score matching the candidate's technical manifesto and culture preferences."""
+        vibe_keywords = [
+            "autonomous", "agent", "frontier", "velocity", "ownership", 
+            "fast-paced", "zero to one", "founder", "ai-first", "agi", 
+            "hacker", "sovereign", "builder", "startup"
+        ]
+        corporate_keywords = [
+            "bureaucracy", "enterprise", "legacy", "red tape", "slow", 
+            "processes", "synergy", "corporate", "waterfall"
+        ]
+        
+        desc_lower = description.lower()
+        score = 50.0
+        
+        for kw in vibe_keywords:
+            if kw in desc_lower:
+                score += 15.0
+                
+        for kw in corporate_keywords:
+            if kw in desc_lower:
+                score -= 10.0
+                
+        return min(max(score, 0.0), 100.0)
+
     async def score_job_deep(self, job: dict, profile: dict) -> MatchResult:
         """LLM-assisted deep scoring."""
         if not self.llm_client:
@@ -252,6 +283,9 @@ class JobMatcher:
         base_result = self.score_job(job, profile)
 
         prompt = f"""Analyze this job against the candidate profile and provide match scores.
+Pay special attention to the "Vibe Score". The candidate is an autonomous agent builder who 
+values "Sovereign AI", "Frontier Model Execution", and "Developer Velocity". Score the company culture 
+and job description on how well it aligns with these vibes versus a traditional corporate bureaucracy.
 
 Job Title: {job.get('title', '')}
 Job Description:
@@ -264,15 +298,17 @@ Return JSON:
 {{
     "overall_score": <0-100>,
     "skill_score": <0-100>,
+    "vibe_score": <0-100>,
     "title_score": <0-100>,
     "experience_score": <0-100>,
-    "explanation": "<2-3 sentence explanation>",
+    "explanation": "<2-3 sentence explanation including vibe analysis>",
     "missing_skills": ["skill1", "skill2"]
 }}"""
 
         try:
             result = await self.llm_client.complete_json(prompt)
             base_result.overall_score = result.get("overall_score", base_result.overall_score)
+            base_result.vibe_score = result.get("vibe_score", base_result.vibe_score)
             base_result.explanation = result.get("explanation", base_result.explanation)
             if result.get("missing_skills"):
                 base_result.missing_skills = result["missing_skills"]
