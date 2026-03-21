@@ -1,86 +1,67 @@
-# Job Search 🧭
+# 🧭 CareerAgent: The Autonomous Career Strategist
+> **Don't just apply. Dominate the market with agentic strategy.**
 
-Job Search is an AI-powered job application assistant that automates the tedious parts of the job search: finding relevant jobs, scoring them against your profile, and tailoring your resume.
+`CareerAgent` is an AI-powered execution layer for long-term career growth. It automates the tedious high-latency parts of the job market—searching, scoring, and tailoring—allowing you to focus on the high-value conversations that matter.
 
-## Features
+---
 
-- **Automated LinkedIn Scraping**: Finds jobs based on your target keywords and location.
-- **AI Matching**: Uses LLMs (Claude or GPT-4) to score jobs against your skills and experience.
-- **Resume Parsing**: Extracts structured data from PDF/DOCX resumes.
-- **Resume Tailoring**: Automatically reframes your experience to match specific job descriptions.
-- **PDF Generation**: Generates clean, professional resumes using customizable Jinja2 templates.
+### 🌐 The Vision
+In the era of AI, finding a role should be as autonomous as the code we write. `CareerAgent` acts as your personal "Search & Rescue" team for opportunities, ensuring you never miss a match that fits your `vibe` and `potential`.
 
-## Quick Start
+### 🧠 Strategic Capabilities
 
-### 1. Prerequisites
-- Python 3.10+
-- [Playwright](https://playwright.dev/python/) (for scraping)
+#### 1. Multi-Dimensional Scraping 📡
+- **Omni-Source Search**: Parallel execution across LinkedIn, Remotive, RemoteOK, and Himalayas.
+- **Stealth Mode**: Advanced browser fingerprinting bypass to avoid bot detection.
+- **Ghost Search**: HTTP-based SEO fetching for minimal footprint.
 
-### 2. Installation
+#### 2. Deep Match Scoring 🎯
+- **Semantic Mapping**: LLM-driven analysis (Claude/GPT-4) comparing your soul/skills to the JD.
+- **Vibe Delta**: Identifies gaps in experience and suggests "bridge" projects to close them.
 
-1. Clone the repository and enter it:
+#### 3. Infinite Resume Tailoring 📄
+- **Contextual Reframing**: Automatically rewrite your experience to speak the specific language of the target company.
+- **Jinja-Precision**: Clean, professional PDFs generated from semantic templates.
+
+---
+
+### 🚀 Hyper-Speed Setup
+
+1. **Clone the Strategist**:
    ```bash
    git clone https://github.com/hrshitkunwar-tech/job.git
    cd job
    ```
-2. Create a virtual environment and activate it:
+2. **Ignite the Environment**:
    ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-   > Once the venv is activated, `python`, `pip`, and `playwright` will work without the `3` suffix.
-3. Install dependencies:
-   ```bash
+   python3 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
-   ```
-4. Install Playwright browsers:
-   ```bash
    playwright install chromium
    ```
+3. **Configure the Brain**:
+   Update `.env` with your `ANTHROPIC_API_KEY` and LinkedIn credentials.
 
-### 3. Configuration
+4. **Deploy the Dashboard**:
+   ```bash
+   python run.py
+   ```
 
-Create a `.env` file in the root directory (use `.env.example` as a template):
+---
 
-```ini
-# App
-DEBUG=true
-
-# LLM Provider (claude or openai)
-LLM_PROVIDER=claude
-ANTHROPIC_API_KEY=your_key_here
-# OPENAI_API_KEY=your_key_here
-
-# LinkedIn Credentials (Optional but recommended)
-LINKEDIN_EMAIL=your@email.com
-LINKEDIN_PASSWORD=your_password
-
-# Browser Settings
-BROWSER_HEADLESS=true
+### 🏗 Architecture of the Future
+```
+CareerAgent/
+├── job_search/      # Core Strategic Logic
+│   ├── services/    # Scrapers, LLM Orchestration, Matching
+│   ├── routes/      # The Mission Control Web API
+│   └── templates/   # Visual Identity (Resumes & UI)
+├── data/            # Local SQLite Knowledge Graph
+└── tests/           # 50+ Tests for Bulletproof Execution
 ```
 
-### 4. Running the Application
+> **"The best way to predict the future is to automate the path to it."**
 
-Start the FastAPI server:
-```bash
-python run.py
-```
+---
 
-Visit `http://localhost:8000` to access the dashboard.
+*Open Source. Agentic. Unstoppable.*
 
-## Project Structure
-
-- `job_search/`: Core application package.
-  - `models/`: Database models (SQLAlchemy).
-  - `services/`: Core logic (Scraper, LLM, Matching).
-  - `routes/`: API and Web endpoints.
-  - `templates/`: HTML templates for UI and Resume.
-- `data/`: SQLite database and browser state storage.
-- `tests/`: Test suite for services.
-
-## Development
-
-Run tests:
-```bash
-pytest
-```
