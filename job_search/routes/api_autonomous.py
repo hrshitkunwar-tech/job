@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from job_search.config import settings
@@ -16,6 +20,97 @@ from job_search.schemas.autonomous import (
 from job_search.services.workflow_agents import CoordinatorAgent
 
 router = APIRouter()
+
+
+HEARTBEAT_STAGE_MAP = {
+    "queued": ("planner", "analyze"),
+    "parse": ("perception", "analyze"),
+    "score": ("matcher", "rank"),
+    "decision": ("planner", "verify"),
+    "tailor": ("matcher", "draft"),
+    "form": ("executor", "verify"),
+    "submit": ("executor", "submit"),
+    "track": ("scheduler", "respond"),
+}
+
+
+def _normalize_heartbeat_status(run_status: str, log_status: str) -> str:
+    if log_status in {"submitted", "completed"}:
+        return "completed"
+    if log_status in {"failed", "error"}:
+        return "failed"
+    if log_status in {"skipped", "blocked"}:
+        return "blocked"
+    if log_status == "running":
+        return "running"
+    if run_status == "queued":
+        return "queued"
+    return "running" if run_status == "running" else "queued"
+
+
+def _build_heartbeat_summary(log: AutonomousJobLog) -> str:
+    job = log.job
+    job_label = f"{job.company if job else 'Unknown'} / {job.title if job else f'job #{log.job_id}'}"
+    stage = (log.stage or "queued").lower()
+    status = (log.status or "pending").lower()
+    details = log.details if isinstance(log.details, dict) else {}
+    score = details.get("score")
+    strategy = details.get("tailoring")
+    score_suffix = ""
+    if score is not None:
+        try:
+            score_suffix = f" at {round(float(score))}%"
+        except (TypeError, ValueError):
+            score_suffix = ""
+
+    if stage == "score":
+        return f"Ranked {job_label}{score_suffix}."
+    if stage == "decision" and status == "skipped":
+        return f"Skipped {job_label} based on fit threshold or submission policy."
+    if stage == "tailor":
+        return f"Prepared tailored resume context for {job_label}{f' ({strategy})' if strategy else ''}."
+    if stage == "form":
+        return f"Prepared verified form data for {job_label}."
+    if stage == "submit" and status == "running":
+        return f"Submitting application for {job_label}."
+    if stage == "track" and status == "submitted":
+        return f"Submission completed for {job_label}."
+    if status == "failed":
+        return f"Automation failed for {job_label}: {log.message or 'execution error'}."
+    return f"{stage.title()} stage {status} for {job_label}."
+
+
+def _build_heartbeat_details(log: AutonomousJobLog) -> dict[str, Any]:
+    details = log.details if isinstance(log.details, dict) else {}
+    return {
+        "job_id": log.job_id,
+        "application_id": log.application_id,
+        "attempts": log.attempts,
+        "message": log.message,
+        "details": details,
+    }
+
+
+def _heartbeat_event_from_log(run: AutonomousRun, log: AutonomousJobLog) -> dict[str, Any]:
+    actor, stage = HEARTBEAT_STAGE_MAP.get((log.stage or "").lower(), ("executor", "verify"))
+    event_status = _normalize_heartbeat_status(run.status, (log.status or "").lower())
+    artifact_ref = None
+    if isinstance(log.confirmation, dict):
+        artifact_ref = log.confirmation.get("artifact_ref") or log.confirmation.get("url")
+    if artifact_ref is None and isinstance(log.details, dict):
+        artifact_ref = log.details.get("artifact_ref") or log.details.get("apply_url")
+
+    return {
+        "actor": actor,
+        "stage": stage,
+        "status": event_status,
+        "summary": _build_heartbeat_summary(log),
+        "details": _build_heartbeat_details(log),
+        "confidence": 0.88 if event_status == "completed" else 0.74 if event_status == "running" else 0.55,
+        "latency_ms": None,
+        "artifact_ref": artifact_ref,
+        "created_at": log.created_at.isoformat() if log.created_at else None,
+    }
 
 
 @router.post("/runs", response_model=AutonomousRunResponse)
@@ -183,6 +278,112 @@ def get_autonomous_logs(run_id: int, db: Session = Depends(get_db)):
         }
         for row in logs
     ]
+
+
+@router.get("/heartbeat")
+def get_autonomous_heartbeat(
+    run_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    if run_id is not None:
+        run = db.query(AutonomousRun).filter(AutonomousRun.id == run_id).first()
+    else:
+        run = (
+            db.query(AutonomousRun)
+            .order_by(AutonomousRun.id.desc())
+            .first()
+        )
+
+    if not run:
+        return {
+            "run_id": None,
+            "status": "idle",
+            "summary": "No autonomous run has been started yet.",
+            "progress": None,
+            "events": [],
+        }
+
+    logs = (
+        db.query(AutonomousJobLog)
+        .filter(AutonomousJobLog.run_id == run.id)
+        .order_by(AutonomousJobLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    events = [_heartbeat_event_from_log(run, row) for row in logs]
+
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "summary": f"Run #{run.id} is {run.status} across {run.total_jobs} jobs.",
+        "progress": {
+            "total_jobs": run.total_jobs,
+            "processed_jobs": run.processed_jobs,
+            "submitted_jobs": run.submitted_jobs,
+            "failed_jobs": run.failed_jobs,
+            "skipped_jobs": run.skipped_jobs,
+        },
+        "events": events,
+    }
+
+
+@router.get("/thoughts/stream")
+async def stream_thoughts(db: Session = Depends(get_db)):
+    """SSE: stream CareerAgent's live reasoning about the current job search state."""
+    from job_search.services.llm_client import get_llm_client
+    from job_search.models import Job, Application, ApplicationStatus
+
+    total_jobs = db.query(Job).count()
+    total_applied = (
+        db.query(Application)
+        .filter(Application.status == ApplicationStatus.SUBMITTED)
+        .count()
+    )
+    recent_run = db.query(AutonomousRun).order_by(AutonomousRun.id.desc()).first()
+    run_context = (
+        f"Most recent autonomous run: #{recent_run.id}, status={recent_run.status}, "
+        f"{recent_run.submitted_jobs}/{recent_run.total_jobs} submitted."
+        if recent_run
+        else "No autonomous run started yet."
+    )
+
+    system = (
+        "You are CareerAgent's internal reasoning system. Think step by step about the current "
+        "job search state and what the agent should prioritize next. "
+        "Be direct, specific, and terse. Short sentences. "
+        "Think like an execution system — not a chatbot."
+    )
+    prompt = (
+        f"State: {total_jobs} jobs in DB, {total_applied} applications submitted. "
+        f"{run_context}\n"
+        "Reason through the job search funnel: sourcing → scoring → tailoring → submission → follow-up. "
+        "What is the highest-leverage next action and why?"
+    )
+
+    llm = get_llm_client()
+
+    async def generate():
+        yield f"data: {json.dumps({'type': 'start'})}\n\n"
+        if llm is None:
+            yield (
+                f"data: {json.dumps({'type': 'token', 'text': 'No LLM configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL.'})}\n\n"
+            )
+            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+            return
+        try:
+            async for token in llm.stream(prompt, system=system, max_tokens=600):
+                yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+        except Exception as exc:
+            logger.error("Live thoughts stream error: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/runs/{run_id}/stop", response_model=AutonomousStopResponse)

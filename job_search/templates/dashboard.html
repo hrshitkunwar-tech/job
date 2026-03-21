@@ -82,6 +82,60 @@
     </div>
 </div>
 
+<div class="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div class="lg:col-span-2 bg-white rounded-lg shadow p-6">
+        <div class="flex justify-between items-center mb-4">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900">Autonomous Heartbeat</h2>
+                <p class="text-sm text-gray-500">Reasoning summaries and execution state from the active autonomous run.</p>
+            </div>
+            <span id="heartbeat-run-status" class="px-2 py-1 rounded text-xs font-semibold bg-gray-100 text-gray-700">Idle</span>
+        </div>
+        <div id="heartbeat-progress" class="text-sm text-gray-500 mb-4">No active autonomous run.</div>
+        <div id="autonomous-heartbeat" class="space-y-3">
+            <div class="bg-gray-50 rounded-lg border border-dashed border-gray-200 p-4 text-sm text-gray-500">
+                Waiting for autonomous telemetry…
+            </div>
+        </div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Vibe Match</h2>
+        <p class="text-sm text-gray-600 leading-6">
+            CareerAgent scores culture fit using your manifesto, team preference, execution speed, autonomy level, and frontier-tech appetite.
+        </p>
+        <div class="mt-4 rounded-lg bg-indigo-50 border border-indigo-100 p-4">
+            <div class="text-xs uppercase tracking-wide font-semibold text-indigo-700 mb-2">Signals used</div>
+            <div class="space-y-2 text-sm text-indigo-900">
+                <div>Builder-led vs process-heavy teams</div>
+                <div>Startup stage, velocity, and ownership</div>
+                <div>Frontier-tech exposure and autonomy</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Live Thoughts -->
+<div class="mt-8 bg-gray-950 rounded-xl shadow-lg p-6 border border-gray-800">
+    <div class="flex justify-between items-center mb-4">
+        <div>
+            <h2 class="text-base font-semibold text-gray-100">Live Thoughts</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Agent reasoning stream — what CareerAgent is thinking right now</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="thoughts-status" class="text-xs text-gray-500">Idle</span>
+            <button id="thoughts-trigger"
+                onclick="triggerThoughts()"
+                class="px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed">
+                Reason Now
+            </button>
+        </div>
+    </div>
+    <div id="thoughts-output"
+        class="font-mono text-sm text-emerald-400 bg-gray-900 rounded-lg p-4 min-h-[80px] max-h-64 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+        <span class="text-gray-600">Waiting for reasoning trigger…</span>
+    </div>
+</div>
+
 <!-- Quick Actions -->
 <div class="mt-8 flex gap-4">
     <a href="/search"
@@ -120,6 +174,7 @@
 <script>
     let currentAppId = null;
     let selectedResumeId = null;
+    let heartbeatTimer = null;
 
     async function openApplyModal(appId) {
         currentAppId = appId;
@@ -232,5 +287,126 @@
     document.getElementById('applyModal')?.addEventListener('click', function(e) {
         if (e.target === this) closeApplyModal();
     });
+
+    function heartbeatBadgeClass(status) {
+        if (status === 'running') return 'bg-emerald-100 text-emerald-700';
+        if (status === 'completed') return 'bg-blue-100 text-blue-700';
+        if (status === 'failed') return 'bg-red-100 text-red-700';
+        if (status === 'blocked') return 'bg-amber-100 text-amber-700';
+        return 'bg-gray-100 text-gray-700';
+    }
+
+    function renderHeartbeat(data) {
+        const container = document.getElementById('autonomous-heartbeat');
+        const progress = document.getElementById('heartbeat-progress');
+        const statusEl = document.getElementById('heartbeat-run-status');
+        if (!container || !progress || !statusEl) return;
+
+        const status = data?.status || 'idle';
+        statusEl.textContent = status === 'idle' ? 'Idle' : `Run ${data.run_id} · ${status}`;
+        statusEl.className = `px-2 py-1 rounded text-xs font-semibold ${heartbeatBadgeClass(status)}`;
+
+        if (!data?.events?.length) {
+            progress.textContent = data?.summary || 'No active autonomous run.';
+            container.innerHTML = `
+                <div class="bg-gray-50 rounded-lg border border-dashed border-gray-200 p-4 text-sm text-gray-500">
+                    ${status === 'idle' ? 'Start an autonomous run to see the live reasoning feed.' : 'No heartbeat events yet.'}
+                </div>
+            `;
+            return;
+        }
+
+        const progressData = data.progress || {};
+        progress.textContent = `Processed ${progressData.processed_jobs || 0}/${progressData.total_jobs || 0} · Submitted ${progressData.submitted_jobs || 0} · Failed ${progressData.failed_jobs || 0} · Skipped ${progressData.skipped_jobs || 0}`;
+
+        container.innerHTML = data.events.map((event) => {
+            const details = event.details || {};
+            const meta = [event.actor, event.stage, event.status].filter(Boolean).join(' · ');
+            return `
+                <div class="rounded-lg border border-gray-200 p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <div class="text-xs uppercase tracking-wide font-semibold text-gray-400">${meta}</div>
+                            <div class="text-sm font-medium text-gray-900 mt-1">${event.summary}</div>
+                        </div>
+                        <div class="text-xs text-gray-400 whitespace-nowrap">${event.created_at ? new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}</div>
+                    </div>
+                    ${(details.message || details.attempts || details.application_id) ? `
+                        <div class="mt-2 text-xs text-gray-500">
+                            ${details.application_id ? `App #${details.application_id}` : ''}
+                            ${details.attempts ? `${details.application_id ? ' · ' : ''}${details.attempts} attempt(s)` : ''}
+                            ${details.message ? `${(details.application_id || details.attempts) ? ' · ' : ''}${details.message}` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function loadHeartbeat() {
+        try {
+            const res = await fetch('/api/autonomous/heartbeat?limit=10');
+            if (!res.ok) throw new Error('failed');
+            const data = await res.json();
+            renderHeartbeat(data);
+        } catch (error) {
+            renderHeartbeat({
+                status: 'blocked',
+                summary: 'Could not load autonomous heartbeat right now.',
+                events: [],
+            });
+        }
+    }
+
+    loadHeartbeat();
+    heartbeatTimer = window.setInterval(loadHeartbeat, 6000);
+
+    // Live Thoughts SSE
+    let thoughtsSource = null;
+
+    function triggerThoughts() {
+        const output = document.getElementById('thoughts-output');
+        const status = document.getElementById('thoughts-status');
+        const btn = document.getElementById('thoughts-trigger');
+
+        if (thoughtsSource) {
+            thoughtsSource.close();
+            thoughtsSource = null;
+        }
+
+        output.textContent = '';
+        status.textContent = 'Connecting…';
+        btn.disabled = true;
+
+        thoughtsSource = new EventSource('/api/autonomous/thoughts/stream');
+        let buffer = '';
+
+        thoughtsSource.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'start') {
+                status.textContent = 'Reasoning…';
+            } else if (msg.type === 'token') {
+                buffer += msg.text;
+                output.textContent = buffer;
+                output.scrollTop = output.scrollHeight;
+            } else if (msg.type === 'end' || msg.type === 'error') {
+                if (msg.type === 'error') buffer += '\n[error: ' + msg.text + ']';
+                output.textContent = buffer || '(no output)';
+                status.textContent = msg.type === 'error' ? 'Error' : 'Done';
+                btn.disabled = false;
+                thoughtsSource.close();
+                thoughtsSource = null;
+            }
+        };
+
+        thoughtsSource.onerror = () => {
+            status.textContent = 'Disconnected';
+            btn.disabled = false;
+            if (thoughtsSource) { thoughtsSource.close(); thoughtsSource = null; }
+        };
+    }
+
+    // Auto-trigger on load if LLM is likely configured
+    triggerThoughts();
 </script>
 {% endblock %}

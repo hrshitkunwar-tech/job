@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from enum import Enum
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,64 @@ class LLMClient:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     raise
+
+    async def stream(
+        self,
+        prompt: str,
+        system: Optional[str] = None,
+        max_tokens: int = 512,
+    ) -> AsyncGenerator[str, None]:
+        """Stream response tokens as they arrive."""
+        client = self._get_client()
+
+        if self.provider == LLMProvider.CLAUDE:
+            kwargs: dict = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if system:
+                kwargs["system"] = system
+            async with client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield text
+
+        elif self.provider == LLMProvider.OPENAI:
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+            async for chunk in response:
+                token = chunk.choices[0].delta.content
+                if token:
+                    yield token
+
+        elif self.provider == LLMProvider.OLLAMA:
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+            async with client.stream("POST", "/api/chat", json={
+                "model": self.model,
+                "messages": messages,
+                "stream": True,
+            }) as response:
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        token = data.get("message", {}).get("content", "")
+                        if token:
+                            yield token
+                    except json.JSONDecodeError:
+                        pass
 
     async def complete_json(
         self,
