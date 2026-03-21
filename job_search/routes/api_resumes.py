@@ -147,6 +147,7 @@ async def tailor_resume(resume_id: int, request: TailorRequest, db: Session = De
     output_path = generator.generate_pdf(
         tailored_data,
         output_filename=f"resume_{resume_id}_job_{job.id}.pdf",
+        require_pdf=False,
     )
 
     # Save version

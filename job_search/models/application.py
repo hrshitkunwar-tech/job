@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SAEnum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -31,6 +31,8 @@ class Application(Base):
     notes = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     automation_log = Column(Text, nullable=True)
+    blocker_details = Column(JSON, nullable=True)
+    user_inputs = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     job = relationship("Job")

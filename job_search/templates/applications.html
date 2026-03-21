@@ -5,12 +5,14 @@
 
 <!-- Status Filters -->
 <div class="flex gap-2 mb-6">
-    <button onclick="filterByStatus('')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn active">All</button>
-    <button onclick="filterByStatus('queued')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Queued</button>
-    <button onclick="filterByStatus('submitted')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Submitted</button>
-    <button onclick="filterByStatus('interview')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Interview</button>
-    <button onclick="filterByStatus('rejected')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Rejected</button>
-    <button onclick="filterByStatus('offer')" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Offer</button>
+    <button onclick="filterByStatus('', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn active">All ({{ applications|length }})</button>
+    <button onclick="filterByStatus('queued', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Queued ({{ status_counts.queued }})</button>
+    <button onclick="filterByStatus('in_progress', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">In Progress ({{ status_counts.in_progress }})</button>
+    <button onclick="filterByStatus('submitted', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Submitted ({{ status_counts.submitted }})</button>
+    <button onclick="filterByStatus('reviewed', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Reviewed ({{ status_counts.reviewed }})</button>
+    <button onclick="filterByStatus('interview', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Interview ({{ status_counts.interview }})</button>
+    <button onclick="filterByStatus('rejected', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Rejected ({{ status_counts.rejected }})</button>
+    <button onclick="filterByStatus('offer', this)" class="px-3 py-1 text-sm rounded-full bg-gray-200 hover:bg-gray-300 filter-btn">Offer ({{ status_counts.offer }})</button>
 </div>
 
 <!-- Applications Table -->
@@ -28,7 +30,8 @@
         </thead>
         <tbody class="divide-y divide-gray-200">
             {% for app in applications %}
-            <tr class="app-row hover:bg-gray-50" data-status="{{ app.status.value if app.status else 'queued' }}">
+            {% set app_status = app.status_normalized %}
+            <tr class="app-row hover:bg-gray-50" data-status="{{ app_status }}">
                 <td class="px-6 py-4 text-sm text-gray-900">{{ app.job.company if app.job else "—" }}</td>
                 <td class="px-6 py-4 text-sm">
                     {% if app.job %}
@@ -39,9 +42,9 @@
                 </td>
                 <td class="px-6 py-4">
                     <select onchange="updateStatus({{ app.id }}, this.value)"
-                            class="text-xs rounded-full px-2 py-1 border-0 status-{{ app.status.value if app.status else 'queued' }}">
-                        {% for s in ["queued", "submitted", "interview", "rejected", "offer", "withdrawn"] %}
-                        <option value="{{ s }}" {% if app.status and app.status.value == s %}selected{% endif %}>{{ s }}</option>
+                            class="text-xs rounded-full px-2 py-1 border-0 status-{{ app_status }}">
+                        {% for s in ["queued", "in_progress", "reviewed", "failed", "submitted", "interview", "rejected", "offer", "withdrawn"] %}
+                        <option value="{{ s }}" {% if app_status == s %}selected{% endif %}>{{ s }}</option>
                         {% endfor %}
                     </select>
                 </td>
@@ -71,24 +74,41 @@
         </tbody>
     </table>
 </div>
+<p id="filter-empty-hint" class="hidden mt-3 text-sm text-gray-500">No applications match this filter.</p>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function filterByStatus(status) {
+function normalizeStatus(value) {
+    return (value || '').toString().toLowerCase().replace('applicationstatus.', '');
+}
+
+function filterByStatus(status, btnEl) {
+    const target = normalizeStatus(status);
+    let visibleRows = 0;
     document.querySelectorAll('.app-row').forEach(row => {
-        row.style.display = !status || row.dataset.status === status ? '' : 'none';
+        const rowStatus = normalizeStatus(row.dataset.status);
+        const show = !target || rowStatus === target;
+        row.style.display = show ? '' : 'none';
+        if (show) visibleRows += 1;
     });
-    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('bg-indigo-200', 'text-indigo-800'));
-    event.target.classList.add('bg-indigo-200', 'text-indigo-800');
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.remove('bg-indigo-200', 'text-indigo-800');
+    });
+    if (btnEl) btnEl.classList.add('bg-indigo-200', 'text-indigo-800');
+    const hint = document.getElementById('filter-empty-hint');
+    if (hint) hint.classList.toggle('hidden', visibleRows > 0);
 }
 
 async function updateStatus(appId, status) {
-    await fetch(`/api/applications/${appId}`, {
+    const res = await fetch(`/api/applications/${appId}`, {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({status: status})
     });
+    if (res.ok) {
+        location.reload();
+    }
 }
 </script>
 {% endblock %}

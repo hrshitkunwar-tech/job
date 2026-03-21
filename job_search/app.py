@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     from job_search.routes.api_jobs import router as jobs_router
     from job_search.routes.api_applications import router as applications_router
     from job_search.routes.api_search import router as search_router
+    from job_search.routes.api_autonomous import router as autonomous_router
 
     app.include_router(dashboard_router)
     app.include_router(profile_router, prefix="/api/profile", tags=["profile"])
@@ -52,6 +54,33 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
     app.include_router(applications_router, prefix="/api/applications", tags=["applications"])
     app.include_router(search_router, prefix="/api/search", tags=["search"])
+    app.include_router(autonomous_router, prefix="/api/autonomous", tags=["autonomous"])
+
+    @app.middleware("http")
+    async def add_cache_headers(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+
+        # User uploads/generated files should never be cached.
+        if path.startswith("/static/uploads") or path.startswith("/static/generated"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
+
+        # Keep dynamic pages and API responses fresh.
+        if path.startswith("/api/") or not path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
+
+        # Cache static assets with revalidation. In debug, disable cache for rapid iteration.
+        if settings.debug:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+        return response
 
     return app
 
@@ -71,3 +100,16 @@ def from_json(value):
         return [value]
 
 templates.env.filters['from_json'] = from_json
+
+
+def asset_url(path: str) -> str:
+    normalized = path.lstrip("/")
+    file_path = Path(normalized)
+    try:
+        version = int(file_path.stat().st_mtime)
+    except OSError:
+        version = int(time.time())
+    return f"/{normalized}?v={version}"
+
+
+templates.env.globals["asset_url"] = asset_url

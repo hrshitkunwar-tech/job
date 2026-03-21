@@ -56,3 +56,9 @@ PROGRESS_TRACKING_AND_SUPABASE.md
 test_output*.log
 test_google_*.py
 data/*.stable_backup
+data/*.log
+app_stdout.log
+
+# Selector grounding local artifacts
+selector-grounder/node_modules/
+selector-grounder/auth/*.json

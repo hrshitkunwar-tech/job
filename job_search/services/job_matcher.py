@@ -42,10 +42,66 @@ class JobMatcher:
     def __init__(self, llm_client=None):
         self.llm_client = llm_client
 
+    def _build_effective_skills(self, profile: dict) -> list[str]:
+        """Build a richer skill list from explicit skills + profile text."""
+        explicit_skills = profile.get("skills", []) or []
+        target_roles = profile.get("target_roles", []) or []
+        summary = profile.get("summary", "") or ""
+        headline = profile.get("headline", "") or ""
+        experience = profile.get("experience", []) or []
+
+        merged: list[str] = []
+        seen: set[str] = set()
+
+        def add_term(term: str):
+            term = (term or "").strip()
+            if not term:
+                return
+            norm = normalize_skill(term)
+            if not norm or norm in seen:
+                return
+            seen.add(norm)
+            merged.append(term)
+
+        for skill in explicit_skills:
+            if isinstance(skill, str):
+                add_term(skill)
+
+        for role in target_roles:
+            if not isinstance(role, str):
+                continue
+            add_term(role)
+            for token in re.split(r"[\s/|,&()-]+", role):
+                if len(token) >= 4:
+                    add_term(token)
+
+        profile_text_parts = [summary, headline]
+        if isinstance(experience, list):
+            for item in experience[:8]:
+                if isinstance(item, str):
+                    profile_text_parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                for field in ("title", "company", "description"):
+                    value = item.get(field)
+                    if isinstance(value, str):
+                        profile_text_parts.append(value)
+                bullets = item.get("bullets")
+                if isinstance(bullets, list):
+                    profile_text_parts.extend([b for b in bullets if isinstance(b, str)])
+
+        extracted = extract_keywords(" ".join(profile_text_parts), min_length=4, max_count=40)
+        for kw in extracted:
+            if len(kw) >= 4:
+                add_term(kw)
+
+        return merged
+
     def score_job(self, job: dict, profile: dict) -> MatchResult:
         """Score a job against user profile using keyword matching."""
         description = job.get("description", "")
-        user_skills = profile.get("skills", [])
+        user_skills = self._build_effective_skills(profile)
         target_roles = profile.get("target_roles", [])
         target_locations = profile.get("target_locations", [])
         user_experience = profile.get("experience", [])

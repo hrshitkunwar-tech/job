@@ -410,6 +410,7 @@
     let currentSearchId = null;
     let currentDbSearchId = null;
     let searchStartTime = null;
+    let latestSearchWarnings = [];
 
     // Role tags management
     const roles = [];
@@ -660,6 +661,12 @@
     let progressInterval = null;
     let lastJobCount = 0;
 
+    function warningHtml(warnings) {
+        if (!warnings || warnings.length === 0) return '';
+        const items = warnings.slice(0, 3).map(w => `<li>${w}</li>`).join('');
+        return `<ul class="mt-2 text-xs text-amber-800 list-disc list-inside">${items}</ul>`;
+    }
+
     function startProgressPolling(keywords, targetLimit) {
         lastJobCount = 0;
         let pollCount = 0;
@@ -677,6 +684,14 @@
                 const response = await fetch(url);
                 const data = await response.json();
                 const currentCount = data.total;
+                let statusData = null;
+                if (currentSearchId) {
+                    const statusRes = await fetch(`/api/search/status/${currentSearchId}?_t=${Date.now()}`);
+                    if (statusRes.ok) {
+                        statusData = await statusRes.json();
+                        latestSearchWarnings = statusData.warnings || [];
+                    }
+                }
 
                 // Update UI
                 document.getElementById('jobs-found-count').textContent = `${currentCount} jobs found`;
@@ -686,9 +701,9 @@
                 document.getElementById('progress-bar').style.width = `${progress}%`;
 
                 // Check if target reached
-                if (currentCount >= targetLimit && currentCount > 0) {
+                if ((statusData && ["completed", "failed", "cancelled"].includes(statusData.state)) || (currentCount >= targetLimit && currentCount > 0)) {
                     clearInterval(progressInterval);
-                    showCompletion(currentCount, keywords);
+                    showCompletion(currentCount, keywords, latestSearchWarnings);
                     return;
                 }
 
@@ -697,16 +712,20 @@
                     lastJobCount = currentCount;
                     pollCount = 0; // Reset poll count when new jobs found
                     document.getElementById('progress-status').textContent = `Found ${currentCount} jobs so far...`;
+                    if (latestSearchWarnings.length > 0) {
+                        document.getElementById('progress-status').innerHTML =
+                            `Found ${currentCount} jobs so far... ${warningHtml(latestSearchWarnings)}`;
+                    }
                 } else if (pollCount > 24) {
                     // No new jobs for 2 minutes (24 polls × 5 seconds), assume complete
                     clearInterval(progressInterval);
-                    showCompletion(currentCount, keywords);
+                    showCompletion(currentCount, keywords, latestSearchWarnings);
                 }
 
                 // Stop after max time (10 minutes)
                 if (pollCount >= 300) { // 300 polls * 2s = 600s = 10m
                     clearInterval(progressInterval);
-                    showCompletion(currentCount, keywords);
+                    showCompletion(currentCount, keywords, latestSearchWarnings);
                 }
             } catch (error) {
                 console.error('Progress polling error:', error);
@@ -714,7 +733,7 @@
         }, 2000); // Poll every 2 seconds
     }
 
-    async function showCompletion(jobCount, keywords) {
+    async function showCompletion(jobCount, keywords, warnings = []) {
         // Final check to catch any last-second saves
         let finalCount = jobCount;
         try {
@@ -756,12 +775,12 @@
         if (finalCount === 0) {
             const selectedPortals = Array.from(document.querySelectorAll('input[name="portals"]:checked')).map(cb => cb.value);
             if (selectedPortals.includes('web')) {
-                completionMessage.innerHTML = `No jobs found for "${keywords}". <span class="text-sm text-gray-600">The Web portal searches remote-job boards (Remotive, RemoteOK, Arbeitnow, Himalayas) which focus on remote/global positions. For location-specific results, try the <b>LinkedIn</b> portal.</span>`;
+                completionMessage.innerHTML = `No jobs found for "${keywords}". <span class="text-sm text-gray-600">Checked Web + ATS sources. Try broader keywords or LinkedIn for local-specific results.</span>${warningHtml(warnings)}`;
             } else {
-                completionMessage.innerHTML = `Found 0 jobs. <a href="${url}" class="underline font-medium">Try a different search →</a>`;
+                completionMessage.innerHTML = `Found 0 jobs. <a href="${url}" class="underline font-medium">Try a different search →</a>${warningHtml(warnings)}`;
             }
         } else {
-            completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>`;
+            completionMessage.innerHTML = `Found ${finalCount} jobs. <a href="${url}" class="underline font-medium">View all jobs →</a>${warningHtml(warnings)}`;
         }
         completionDiv.classList.remove('hidden');
 

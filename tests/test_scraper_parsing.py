@@ -1,6 +1,7 @@
 """Test HTML parsing logic for LinkedIn and free job API mappers with mock data."""
 
 from job_search.services.scraper import (
+    LinkedInScraper,
     _parse_job_cards_from_html,
     _strip_tags,
     WebJobScraper,
@@ -117,6 +118,53 @@ def test_parse_job_cards_sets_source():
 def test_parse_empty_html():
     jobs = _parse_job_cards_from_html("<html><body>No jobs here</body></html>", limit=10)
     assert jobs == []
+
+
+def test_parse_job_cards_skips_promoted_cards():
+    html = """
+    <html><body>
+    <div class="base-card base-search-card">
+      <span>Promoted</span>
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/5555555555">Promoted Role</a>
+      <h3 class="base-search-card__title">Customer Experience Manager</h3>
+      <h4 class="base-search-card__subtitle">Posha</h4>
+    </div>
+    <div class="base-card base-search-card">
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/6666666666">MERN Role</a>
+      <h3 class="base-search-card__title">MERN Stack Developer</h3>
+      <h4 class="base-search-card__subtitle">Acme</h4>
+    </div>
+    </body></html>
+    """
+    jobs = _parse_job_cards_from_html(html, limit=10)
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "MERN Stack Developer"
+
+
+def test_linkedin_relevance_drops_irrelevant_mgmt_for_mern():
+    scraper = LinkedInScraper()
+    jobs = [
+        {"title": "Customer Experience Manager", "company": "Posha", "description": "Customer operations"},
+        {"title": "MERN Stack Developer", "company": "Acme", "description": "React Node MongoDB"},
+        {"title": "Full Stack Engineer", "company": "Globex", "description": "Node and React"},
+    ]
+    filtered = scraper._filter_relevant_jobs(jobs, "MERN Stack Developer", limit=10)
+    titles = [job["title"] for job in filtered]
+    assert "Customer Experience Manager" not in titles
+    assert "MERN Stack Developer" in titles
+
+
+def test_linkedin_relevance_rejects_noisy_verification_titles_for_mern():
+    scraper = LinkedInScraper()
+    score = scraper._linkedin_relevance_score(
+        {
+            "title": "Customer Success Manager with verification",
+            "company": "Unknown",
+            "description": "",
+        },
+        "MERN Stack Developer",
+    )
+    assert score == 0.0
 
 
 def test_strip_tags():
@@ -292,6 +340,83 @@ def test_himalayas_mapping_external_id():
 def test_himalayas_mapping_apply_url():
     job = WebJobScraper._map_himalayas_job(MOCK_HIMALAYAS_JOB)
     assert job["apply_url"] == "https://himalayas.app/jobs/h-77777/apply"
+
+
+# ── Greenhouse/Lever mapping tests ───────────────────────────────────
+
+MOCK_GREENHOUSE_JOB = {
+    "id": 121212,
+    "title": "Customer Success Manager",
+    "absolute_url": "https://boards.greenhouse.io/acme/jobs/121212",
+    "updated_at": "2026-02-01T00:00:00Z",
+    "content": "<p>Drive customer retention.</p>",
+    "metadata": [{"name": "Location", "value": "Remote"}],
+}
+
+
+def test_greenhouse_mapping_source():
+    job = WebJobScraper._map_greenhouse_job(MOCK_GREENHOUSE_JOB, "acme")
+    assert job["source"] == "greenhouse"
+
+
+def test_greenhouse_mapping_company_from_board():
+    job = WebJobScraper._map_greenhouse_job(MOCK_GREENHOUSE_JOB, "acme")
+    assert job["company"] == "Acme"
+
+
+MOCK_LEVER_JOB = {
+    "id": "lev-111",
+    "text": "Account Manager",
+    "hostedUrl": "https://jobs.lever.co/acme/lev-111",
+    "categories": {"location": "Remote"},
+    "description": "<p>Own customer accounts.</p>",
+    "createdAt": 1730000000000,
+}
+
+
+def test_lever_mapping_source():
+    job = WebJobScraper._map_lever_job(MOCK_LEVER_JOB, "acme")
+    assert job["source"] == "lever"
+
+
+def test_lever_mapping_apply_url():
+    job = WebJobScraper._map_lever_job(MOCK_LEVER_JOB, "acme")
+    assert job["apply_url"] == "https://jobs.lever.co/acme/lev-111"
+
+
+# ── Query expansion and ranking tests ───────────────────────────────
+
+def test_expanded_query_terms_includes_csm_synonyms():
+    scraper = WebJobScraper()
+    terms = scraper._expanded_query_terms("Senior CSM")
+    assert "customer" in terms
+    assert "success" in terms
+    assert "manager" in terms
+
+
+def test_rank_and_filter_jobs_relaxed_match_keeps_relevant_jobs():
+    scraper = WebJobScraper()
+    jobs = [
+        {
+            "title": "Enterprise Success Partner",
+            "company": "Acme",
+            "description": "Customer retention and onboarding ownership",
+            "location": "Remote",
+            "work_type": "remote",
+            "source": "lever",
+        },
+        {
+            "title": "Data Scientist",
+            "company": "Acme",
+            "description": "Build ML models",
+            "location": "Remote",
+            "work_type": "remote",
+            "source": "lever",
+        },
+    ]
+    ranked = scraper._rank_and_filter_jobs(jobs, "Customer Success Manager", "", {}, limit=10)
+    assert len(ranked) == 1
+    assert ranked[0]["title"] == "Enterprise Success Partner"
 
 
 # ── Deduplication tests ──────────────────────────────────────────────

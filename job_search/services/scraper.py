@@ -4,9 +4,10 @@ import logging
 import random
 import re
 import time
+import os
 from html import unescape
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
 import urllib.parse
 import hashlib
@@ -70,6 +71,8 @@ def _parse_job_cards_from_html(html: str, limit: int) -> List[Dict[str, Any]]:
     for chunk in card_splits[1:]:  # Skip first chunk (before first card)
         if len(jobs) >= limit:
             break
+        if re.search(r"(?i)\bpromoted\b", chunk):
+            continue
 
         # Extract URL
         url_match = re.search(
@@ -88,6 +91,7 @@ def _parse_job_cards_from_html(html: str, limit: int) -> List[Dict[str, Any]]:
             chunk, re.DOTALL
         )
         title = _strip_tags(title_match.group(1)) if title_match else ""
+        title = re.sub(r"\s+with verification.*$", "", title, flags=re.IGNORECASE).strip()
 
         # Extract company
         company_match = re.search(
@@ -131,6 +135,9 @@ def _parse_job_cards_from_html(html: str, limit: int) -> List[Dict[str, Any]]:
             raw_url = match.group(1).split("?")[0]
             external_id = match.group(2)
             title_text = _strip_tags(match.group(3))
+            title_text = re.sub(r"\s+with verification.*$", "", title_text, flags=re.IGNORECASE).strip()
+            if re.search(r"(?i)\bpromoted\b", title_text):
+                continue
             if external_id in seen or not title_text or len(title_text) < 3:
                 continue
             seen.add(external_id)
@@ -147,6 +154,21 @@ def _parse_job_cards_from_html(html: str, limit: int) -> List[Dict[str, Any]]:
 
 
 class LinkedInScraper:
+    GENERIC_ROLE_TOKENS = {
+        "senior", "junior", "lead", "principal", "staff", "associate",
+        "manager", "executive", "specialist", "intern", "consultant",
+        "developer", "engineer", "stack", "full", "part", "time", "remote",
+        "role", "job", "position",
+    }
+
+    QUERY_ALIASES = {
+        "mern": {"mern", "fullstack", "full stack", "react", "node", "mongodb", "express"},
+        "fullstack": {"fullstack", "full stack", "software engineer", "react", "node", "frontend", "backend"},
+        "full stack": {"fullstack", "full stack", "software engineer", "react", "node", "frontend", "backend"},
+        "data engineer": {"data engineer", "etl", "pipeline", "data platform", "big data"},
+        "customer success": {"customer success", "csm", "account manager", "client success", "success manager"},
+    }
+
     def __init__(self):
         self.headless = settings.browser_headless
         self.email = settings.linkedin_email
@@ -200,6 +222,127 @@ class LinkedInScraper:
             url += "&" + "&".join(filter_params)
         return url
 
+    @staticmethod
+    def _sanitize_job_title(title: str) -> str:
+        text = (title or "").strip()
+        if not text:
+            return ""
+        text = text.replace("\xa0", " ")
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\s+with verification.*$", "", text, flags=re.IGNORECASE).strip()
+        return text
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        text = (text or "").lower()
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _query_core_terms(self, query_norm: str) -> set[str]:
+        role_parts = [p.strip() for p in re.split(r",|/|\||\band\b", query_norm) if p.strip()]
+        core_tokens: set[str] = set()
+        for part in role_parts:
+            part_tokens = [t for t in part.split() if len(t) > 2]
+            filtered = [t for t in part_tokens if t not in self.GENERIC_ROLE_TOKENS]
+            if filtered:
+                core_tokens.update(filtered)
+            elif part_tokens:
+                core_tokens.add(part_tokens[0])
+        return core_tokens
+
+    def _query_alias_terms(self, query_norm: str) -> set[str]:
+        aliases: set[str] = set()
+        for phrase, extras in self.QUERY_ALIASES.items():
+            if phrase in query_norm:
+                aliases.update(extras)
+        return aliases
+
+    def _linkedin_relevance_score(self, job: Dict[str, Any], query: str) -> float:
+        title_raw = self._sanitize_job_title(job.get("title", ""))
+        title = self._normalize_for_match(title_raw)
+        company = self._normalize_for_match(job.get("company", ""))
+        description = self._normalize_for_match(job.get("description", ""))
+        haystack = f"{title} {company} {description}"
+        query_norm = self._normalize_for_match(query)
+        query_terms = [t for t in query_norm.split() if len(t) > 2]
+        if not query_terms:
+            return 0.0
+
+        core_tokens = self._query_core_terms(query_norm)
+        alias_terms = self._query_alias_terms(query_norm)
+
+        technical_markers = (
+            "developer",
+            "engineer",
+            "fullstack",
+            "full stack",
+            "frontend",
+            "front end",
+            "backend",
+            "back end",
+            "mern",
+            "react",
+            "node",
+            "software",
+        )
+        is_technical_query = (
+            any(marker in query_norm for marker in technical_markers)
+            or bool({"mern", "fullstack", "full stack"} & alias_terms)
+        )
+        if is_technical_query and not (
+            any(marker in title for marker in technical_markers)
+            or any(term in title for term in alias_terms)
+        ):
+            return 0.0
+
+        core_or_alias = core_tokens | alias_terms
+        core_in_title = any(tok in title for tok in core_or_alias) if core_or_alias else False
+        core_in_haystack = any(tok in haystack for tok in core_or_alias) if core_or_alias else False
+        if core_or_alias and not core_in_title:
+            if not (
+                is_technical_query
+                and core_in_haystack
+                and (any(marker in title for marker in technical_markers) or any(term in title for term in alias_terms))
+            ):
+                return 0.0
+
+        if company in ("", "unknown") and not core_in_title:
+            return 0.0
+
+        title_matches = sum(1 for term in query_terms if term in title)
+        body_matches = sum(1 for term in query_terms if term in haystack and term not in title)
+        score = (title_matches * 2.5) + (body_matches * 0.5)
+
+        if query_norm and query_norm in title:
+            score += 5.0
+        elif query_norm and query_norm in haystack:
+            score += 2.0
+
+        alias_hits_in_title = sum(1 for term in alias_terms if term in title)
+        if alias_hits_in_title:
+            score += min(4.0, alias_hits_in_title * 1.2)
+
+        if is_technical_query and title_matches == 0 and alias_hits_in_title == 0:
+            score -= 4.0
+        return score
+
+    def _filter_relevant_jobs(self, jobs: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
+        query_norm = self._normalize_for_match(query)
+        is_technical_query = any(
+            marker in query_norm
+            for marker in ("developer", "engineer", "stack", "mern", "frontend", "backend", "fullstack")
+        )
+        min_score = 3.5 if is_technical_query else 2.0
+
+        ranked: List[tuple[float, Dict[str, Any]]] = []
+        for job in jobs:
+            score = self._linkedin_relevance_score(job, query)
+            if score < min_score:
+                continue
+            ranked.append((score, job))
+        ranked.sort(key=lambda row: row[0], reverse=True)
+        return [row[1] for row in ranked[:limit]]
+
     async def scrape_jobs(self, query: str, location: str = "United States", limit: int = 10, filters: dict = None, check_cancelled: Callable[[], bool] = None) -> List[Dict[str, Any]]:
         """Main entry point to scrape jobs."""
         filter_params = self._build_filter_params(filters)
@@ -214,8 +357,17 @@ class LinkedInScraper:
         if has_credentials or has_saved_session:
             jobs = await self._scrape_with_browser(query, location, limit, filter_params, check_cancelled)
             if jobs:
-                return jobs
-            logger.warning("Browser-based scraping found 0 jobs. Falling back to HTTP public scraping...")
+                filtered = self._filter_relevant_jobs(jobs, query, limit)
+                # Keep browser path when quality is good; otherwise recover via HTTP.
+                min_needed = max(2, min(limit, 5))
+                if len(filtered) >= min_needed:
+                    return filtered
+                logger.warning(
+                    f"Browser scraping yielded low relevance ({len(filtered)}/{len(jobs)}). "
+                    "Falling back to HTTP public scraping..."
+                )
+            else:
+                logger.warning("Browser-based scraping found 0 jobs. Falling back to HTTP public scraping...")
 
         # HTTP-based public scraping — works without login, no browser bot detection
         jobs = await self._scrape_public_http(query, location, limit, filter_params)
@@ -229,7 +381,7 @@ class LinkedInScraper:
 
         # Fetch full descriptions via HTTP for each job
         detailed_jobs = await self._fetch_details_http(jobs, limit)
-        return detailed_jobs
+        return self._filter_relevant_jobs(detailed_jobs, query, limit)
 
     async def _scrape_public_http(self, query: str, location: str, limit: int, filter_params: list) -> List[Dict[str, Any]]:
         """
@@ -471,6 +623,10 @@ class LinkedInScraper:
                 try:
                     await self._get_random_delay(0.5, 1.5)
                     detail = await self._get_job_details(context, job["url"])
+                    if not detail.get("title"):
+                        detail.pop("title", None)
+                    if not detail.get("company"):
+                        detail.pop("company", None)
                     job.update(detail)
                 except Exception as e:
                     logger.error(f"Failed to get details for {job['url']}: {e}")
@@ -564,15 +720,14 @@ class LinkedInScraper:
             await asyncio.sleep(2)
 
         selectors = [
+            "ul.jobs-search-results__list > li",
+            "ul.jobs-search__results-list > li",
             "li.jobs-search-results__list-item",
             ".scaffold-layout__list-item",
             ".job-card-container",
-            ".base-card.base-card--link",
             "li.result-card",
-            ".base-card",
             "div[data-job-id]",
             "li[data-occludable-job-id]",
-            "ul.jobs-search__results-list > li",
         ]
 
         job_cards = []
@@ -597,6 +752,10 @@ class LinkedInScraper:
 
         for card in job_cards[:limit]:
             try:
+                card_text = ((await card.inner_text()) or "").strip()
+                if re.search(r"(?i)\bpromoted\b", card_text):
+                    continue
+
                 title_selectors = [".job-card-list__title", ".base-search-card__title", "h3.base-search-card__title", "h3", ".job-card-container__link"]
                 company_selectors = [".job-card-container__company-name", ".base-search-card__subtitle", "h4.base-search-card__subtitle", "h4"]
                 link_selectors = ["a.job-card-list__title", "a.base-card__full-link", "a.base-search-card__full-link", "a[href*='/jobs/view/']"]
@@ -627,6 +786,9 @@ class LinkedInScraper:
                     title = (await title_elem.inner_text()).strip() if title_elem else ""
                     company = (await company_elem.inner_text()).strip() if company_elem else "Unknown"
 
+                title = self._sanitize_job_title(title.split("\n")[0] if title else "")
+                company = (company.split("\n")[0].strip() if company else "Unknown")
+
                 if not title:
                     continue
 
@@ -636,6 +798,8 @@ class LinkedInScraper:
                 if url and "?" in url:
                     url = url.split("?")[0]
                 if not url:
+                    continue
+                if not re.search(r"/jobs/view/\d+", url):
                     continue
 
                 parts = url.strip("/").split("/")
@@ -660,6 +824,37 @@ class LinkedInScraper:
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(2)
+
+            title = ""
+            company = ""
+            for selector in [
+                "h1.top-card-layout__title",
+                ".jobs-unified-top-card h1",
+                "h1[data-test-id='job-details-job-title']",
+            ]:
+                try:
+                    el = await page.query_selector(selector)
+                    if el:
+                        text = self._sanitize_job_title((await el.inner_text()) or "")
+                        if text:
+                            title = text
+                            break
+                except Exception:
+                    continue
+            for selector in [
+                ".topcard__org-name-link",
+                ".jobs-unified-top-card__company-name a",
+                "a[data-test-id='job-details-company-name']",
+            ]:
+                try:
+                    el = await page.query_selector(selector)
+                    if el:
+                        text = ((await el.inner_text()) or "").strip()
+                        if text:
+                            company = text
+                            break
+                except Exception:
+                    continue
 
             desc_selectors = [".jobs-description", "#job-details", ".jobs-box__html-content", ".show-more-less-html__markup", ".description__text", "section.description", ".core-section-container__content"]
             description = ""
@@ -705,6 +900,8 @@ class LinkedInScraper:
                 work_type = "remote"
 
             return {
+                "title": title,
+                "company": company,
                 "description": description.strip(),
                 "description_html": description_html.strip(),
                 "location": location.strip(),
@@ -864,11 +1061,11 @@ class GeneralWebScraper:
                 await browser.close()
 
 
+
 class WebJobScraper:
     """
-    Scrapes jobs from free, public job APIs that require no authentication.
-    Sources: Remotive, Arbeitnow, RemoteOK, Himalayas.
-    All 4 APIs are queried in parallel for maximum coverage.
+    Scrapes jobs from free/public APIs.
+    Sources: Remotive, Arbeitnow, RemoteOK, Himalayas, Greenhouse, Lever.
     """
 
     REMOTIVE_API = "https://remotive.com/api/remote-jobs"
@@ -876,55 +1073,205 @@ class WebJobScraper:
     REMOTEOK_API = "https://remoteok.com/api"
     HIMALAYAS_API = "https://himalayas.app/jobs/api"
 
+    GREENHOUSE_BOARD_URL = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
+    LEVER_BOARD_URL = "https://api.lever.co/v0/postings/{company}"
+
+    # Public ATS boards to improve recall without user configuration.
+    DEFAULT_GREENHOUSE_BOARDS = ["openai", "stripe", "airbnb", "notion", "coinbase"]
+    DEFAULT_LEVER_COMPANIES = ["netflix", "shopify", "figma", "canva", "uber"]
+
+    ROLE_SYNONYMS = {
+        "csm": ["customer", "success", "manager"],
+        "customer success": ["customer", "success", "account", "retention"],
+        "account manager": ["account", "manager", "customer", "success"],
+        "software engineer": ["software", "engineer", "developer", "backend", "frontend"],
+        "fullstack": ["fullstack", "full", "stack", "developer", "engineer", "frontend", "backend"],
+        "full stack": ["fullstack", "full", "stack", "developer", "engineer", "frontend", "backend"],
+        "mern": ["mern", "mongodb", "express", "react", "node", "developer", "engineer"],
+        "data engineer": ["data", "engineer", "etl", "pipeline", "sql", "python"],
+    }
+
     def __init__(self):
         self._last_warnings: List[str] = []
         self._last_sources: List[str] = []
+        self._last_source_breakdown: Dict[str, int] = {}
 
     async def scrape_jobs(self, query: str, location: str = "", limit: int = 10, filters: dict = None) -> List[Dict[str, Any]]:
-        """Scrape jobs from multiple free web APIs in parallel."""
-        sources = ["remotive", "arbeitnow", "remoteok", "himalayas"]
+        """Scrape jobs from multiple web/ATS APIs in parallel with ranked relevance."""
+        filters = filters or {}
+        sources = ["remotive", "arbeitnow", "remoteok", "himalayas", "greenhouse", "lever"]
 
         results = await asyncio.gather(
-            self._scrape_remotive(query, limit),
-            self._scrape_arbeitnow(query, limit),
-            self._scrape_remoteok(query, limit),
-            self._scrape_himalayas(query, limit),
+            self._scrape_remotive(query, limit * 8),
+            self._scrape_arbeitnow(query, limit * 8),
+            self._scrape_remoteok(query, limit * 8),
+            self._scrape_himalayas(query, limit * 8),
+            self._scrape_greenhouse(query, limit * 8),
+            self._scrape_lever(query, limit * 8),
             return_exceptions=True,
         )
 
         all_jobs: List[Dict[str, Any]] = []
-        sources_succeeded = []
-        warnings = []
+        warnings: List[str] = []
+        source_breakdown: Dict[str, int] = {}
+        sources_succeeded: List[str] = []
 
         for source_name, result in zip(sources, results):
             if isinstance(result, Exception):
-                logger.error(f"{source_name} raised exception: {result}")
                 warnings.append(f"{source_name} failed: {result}")
-            elif isinstance(result, list):
-                if result:
-                    sources_succeeded.append(source_name)
-                all_jobs.extend(result)
+                logger.error(f"{source_name} raised exception: {result}")
+                continue
 
-        all_jobs = self._deduplicate(all_jobs)
+            if not isinstance(result, list):
+                warnings.append(f"{source_name} returned unexpected payload")
+                continue
 
-        if not all_jobs:
+            source_breakdown[source_name] = len(result)
+            if result:
+                sources_succeeded.append(source_name)
+            else:
+                warnings.append(f"{source_name} returned 0 jobs")
+            all_jobs.extend(result)
+
+        ranked = self._rank_and_filter_jobs(all_jobs, query, location, filters, limit)
+        deduped = self._deduplicate(ranked)
+        final = deduped[:limit]
+
+        if not final:
             location_hint = f" in '{location}'" if location else ""
             warnings.append(
-                f"No results found for '{query}'{location_hint}. "
-                "Web search queries remote-job boards (Remotive, Arbeitnow, RemoteOK, Himalayas). "
-                "These boards focus on remote/global positions and may not have location-specific jobs. "
-                "Try broader keywords or the LinkedIn portal for local results."
+                f"No relevant jobs found for '{query}'{location_hint}. "
+                "Checked web sources: remotive, arbeitnow, remoteok, himalayas, greenhouse, lever. "
+                "Try broader role terms (e.g. 'customer success', 'account manager') or use LinkedIn for local-only jobs."
             )
-
-        logger.info(
-            f"Web scraper total: {len(all_jobs)} jobs from {sources_succeeded}. "
-            f"Warnings: {warnings}"
-        )
 
         self._last_warnings = warnings
         self._last_sources = sources_succeeded
+        self._last_source_breakdown = source_breakdown
 
-        return all_jobs[:limit]
+        logger.info(
+            f"Web scraper: {len(final)} selected from {len(all_jobs)} candidates. "
+            f"Sources={source_breakdown} warnings={warnings}"
+        )
+        return final
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        text = (text or "").lower()
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _expanded_query_terms(self, query: str) -> set[str]:
+        normalized = self._normalize_text(query)
+        terms = set(normalized.split())
+
+        for phrase, extra in self.ROLE_SYNONYMS.items():
+            if phrase in normalized:
+                terms.update(extra)
+
+        if "customer" in terms and "success" in terms:
+            terms.add("csm")
+        return terms
+
+    def _relevance_score(self, job: Dict[str, Any], query: str, terms: set[str], strict_pass: bool) -> float:
+        title = self._normalize_text(job.get("title", ""))
+        company = self._normalize_text(job.get("company", ""))
+        description = self._normalize_text(job.get("description", ""))
+        haystack = f"{title} {company} {description}"
+
+        query_phrase = self._normalize_text(query)
+        term_matches = sum(1 for term in terms if term and term in haystack)
+        title_matches = sum(1 for term in terms if term and term in title)
+
+        score = 0.0
+        score += title_matches * 2.0
+        score += term_matches * 0.8
+
+        if query_phrase and query_phrase in title:
+            score += 4.0
+        elif query_phrase and query_phrase in haystack:
+            score += 2.0
+
+        if strict_pass:
+            return score if (title_matches > 0 or query_phrase in haystack) else 0.0
+        if title_matches == 0 and query_phrase not in title:
+            score -= 2.0
+        return score
+
+    def _job_age_days(self, job: Dict[str, Any]) -> float | None:
+        raw = job.get("posted_date")
+        if not raw:
+            return None
+        if isinstance(raw, datetime):
+            return max(0.0, (datetime.now() - raw).total_seconds() / 86400.0)
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00").replace("+00:00", ""))
+            return max(0.0, (datetime.now() - parsed).total_seconds() / 86400.0)
+        except Exception:
+            return None
+
+    def _matches_filters(self, job: Dict[str, Any], location: str, filters: dict) -> bool:
+        work_types = filters.get("work_types") or []
+        if work_types:
+            job_work = (job.get("work_type") or "").lower()
+            if job_work and not any(w.lower() == job_work for w in work_types):
+                return False
+
+        date_posted = filters.get("date_posted")
+        age_days = self._job_age_days(job)
+        if date_posted and age_days is not None:
+            max_age = {"past_24h": 1, "past_week": 7, "past_month": 30}.get(date_posted)
+            if max_age and age_days > max_age:
+                return False
+
+        if location:
+            loc_norm = self._normalize_text(location)
+            job_loc = self._normalize_text(job.get("location", ""))
+            broad_locs = {"india", "united states", "usa", "united kingdom", "uk", "global"}
+            global_markers = {"remote", "worldwide", "global", "anywhere", "distributed", "international"}
+            if loc_norm in broad_locs:
+                return True
+            # Keep remote/global jobs even for location filter.
+            if job_loc and not any(marker in job_loc for marker in global_markers):
+                loc_parts = [p for p in re.split(r"[\s,]+", loc_norm) if len(p) > 2]
+                if loc_parts:
+                    if not any(p in job_loc for p in loc_parts):
+                        return False
+                elif loc_norm not in job_loc:
+                    return False
+
+        return True
+
+    def _rank_and_filter_jobs(self, jobs: List[Dict[str, Any]], query: str, location: str, filters: dict, limit: int) -> List[Dict[str, Any]]:
+        if not jobs:
+            return []
+
+        terms = self._expanded_query_terms(query)
+
+        ranked: List[tuple[float, Dict[str, Any]]] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        for strict_pass in (True, False):
+            for job in jobs:
+                if not self._matches_filters(job, location, filters):
+                    continue
+                score = self._relevance_score(job, query, terms, strict_pass=strict_pass)
+                threshold = 2.4 if strict_pass else 2.0
+                if score >= threshold:
+                    key = (
+                        (job.get("title") or "").lower().strip(),
+                        (job.get("company") or "").lower().strip(),
+                        (job.get("url") or "").strip(),
+                    )
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    ranked.append((score, job))
+
+            if len(ranked) >= limit:
+                break
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in ranked]
 
     @staticmethod
     def _deduplicate(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -932,8 +1279,8 @@ class WebJobScraper:
         seen: Dict[tuple, Dict[str, Any]] = {}
         for job in jobs:
             key = (
-                job.get("title", "").lower().strip(),
-                job.get("company", "").lower().strip(),
+                (job.get("title") or "").lower().strip(),
+                (job.get("company") or "").lower().strip(),
             )
             if key in seen:
                 existing = seen[key]
@@ -943,36 +1290,25 @@ class WebJobScraper:
                 seen[key] = job
         return list(seen.values())
 
-    # --- Remotive ---
-
     async def _scrape_remotive(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Fetch jobs from Remotive's free public API."""
         logger.info(f"Remotive API: searching for '{query}'")
         try:
             async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
-                resp = await client.get(
-                    self.REMOTIVE_API,
-                    params={"search": query, "limit": min(limit * 2, 50)},
-                )
+                resp = await client.get(self.REMOTIVE_API, params={"search": query, "limit": min(limit, 100)})
                 if resp.status_code != 200:
                     logger.warning(f"Remotive returned HTTP {resp.status_code}")
                     return []
-
-                data = resp.json()
-                raw_jobs = data.get("jobs", [])
-                logger.info(f"Remotive returned {len(raw_jobs)} jobs")
-
+                raw_jobs = resp.json().get("jobs", [])
                 return [self._map_remotive_job(j) for j in raw_jobs[:limit]]
-
         except Exception as e:
             logger.error(f"Remotive scraping failed: {e}")
             return []
 
     @staticmethod
     def _map_remotive_job(j: dict) -> Dict[str, Any]:
-        """Map a Remotive API job to our standard format."""
         desc_html = j.get("description", "")
         desc_text = _strip_tags(desc_html) if desc_html else ""
+        posted = j.get("publication_date")
         return {
             "external_id": f"remotive-{j.get('id', '')}",
             "title": j.get("title", ""),
@@ -985,13 +1321,11 @@ class WebJobScraper:
             "description": desc_text,
             "description_html": desc_html,
             "source": "remotive",
+            "posted_date": posted,
             "scraped_at": datetime.now(),
         }
 
-    # --- Arbeitnow ---
-
     async def _scrape_arbeitnow(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Fetch jobs from Arbeitnow's free public API (client-side filtering)."""
         logger.info(f"Arbeitnow API: searching for '{query}'")
         try:
             async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
@@ -999,27 +1333,14 @@ class WebJobScraper:
                 if resp.status_code != 200:
                     logger.warning(f"Arbeitnow returned HTTP {resp.status_code}")
                     return []
-
-                data = resp.json()
-                raw_jobs = data.get("data", [])
-                query_words = query.lower().split()
-                filtered = [
-                    j for j in raw_jobs
-                    if all(
-                        word in (j.get("title", "") + " " + j.get("description", "")).lower()
-                        for word in query_words
-                    )
-                ]
-                logger.info(f"Arbeitnow: {len(raw_jobs)} total, {len(filtered)} matched '{query}'")
-                return [self._map_arbeitnow_job(j) for j in filtered[:limit]]
-
+                raw_jobs = resp.json().get("data", [])
+                return [self._map_arbeitnow_job(j) for j in raw_jobs[:limit]]
         except Exception as e:
             logger.error(f"Arbeitnow scraping failed: {e}")
             return []
 
     @staticmethod
     def _map_arbeitnow_job(j: dict) -> Dict[str, Any]:
-        """Map an Arbeitnow API job to our standard format."""
         desc_html = j.get("description", "")
         desc_text = _strip_tags(desc_html) if desc_html else ""
         return {
@@ -1034,13 +1355,11 @@ class WebJobScraper:
             "description": desc_text,
             "description_html": desc_html,
             "source": "arbeitnow",
+            "posted_date": j.get("created_at"),
             "scraped_at": datetime.now(),
         }
 
-    # --- RemoteOK ---
-
     async def _scrape_remoteok(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Fetch jobs from RemoteOK's free public API (client-side filtering)."""
         logger.info(f"RemoteOK API: searching for '{query}'")
         try:
             headers = {**HTTP_HEADERS, "User-Agent": "job-search-app/1.0"}
@@ -1049,30 +1368,18 @@ class WebJobScraper:
                 if resp.status_code != 200:
                     logger.warning(f"RemoteOK returned HTTP {resp.status_code}")
                     return []
-
                 data = resp.json()
-                # First element is metadata; skip it
-                raw_jobs = data[1:] if len(data) > 1 else []
-                query_words = query.lower().split()
-                filtered = [
-                    j for j in raw_jobs
-                    if isinstance(j, dict) and all(
-                        word in (j.get("position", "") + " " + j.get("description", "")).lower()
-                        for word in query_words
-                    )
-                ]
-                logger.info(f"RemoteOK: {len(raw_jobs)} total, {len(filtered)} matched '{query}'")
-                return [self._map_remoteok_job(j) for j in filtered[:limit]]
-
+                raw_jobs = data[1:] if isinstance(data, list) and len(data) > 1 else []
+                return [self._map_remoteok_job(j) for j in raw_jobs[:limit] if isinstance(j, dict)]
         except Exception as e:
             logger.error(f"RemoteOK scraping failed: {e}")
             return []
 
     @staticmethod
     def _map_remoteok_job(j: dict) -> Dict[str, Any]:
-        """Map a RemoteOK API job to our standard format."""
         desc_html = j.get("description", "")
         desc_text = _strip_tags(desc_html) if desc_html else ""
+        posted = j.get("date") or j.get("epoch")
         return {
             "external_id": f"remoteok-{j.get('id', '')}",
             "title": j.get("position", ""),
@@ -1085,36 +1392,26 @@ class WebJobScraper:
             "description": desc_text,
             "description_html": desc_html,
             "source": "remoteok",
+            "posted_date": posted,
             "scraped_at": datetime.now(),
         }
 
-    # --- Himalayas ---
-
     async def _scrape_himalayas(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Fetch jobs from Himalayas' free public API (server-side search)."""
         logger.info(f"Himalayas API: searching for '{query}'")
         try:
             async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
-                resp = await client.get(
-                    self.HIMALAYAS_API,
-                    params={"limit": min(limit * 2, 50), "query": query},
-                )
+                resp = await client.get(self.HIMALAYAS_API, params={"limit": min(limit, 100), "query": query})
                 if resp.status_code != 200:
                     logger.warning(f"Himalayas returned HTTP {resp.status_code}")
                     return []
-
-                data = resp.json()
-                raw_jobs = data.get("jobs", [])
-                logger.info(f"Himalayas returned {len(raw_jobs)} jobs")
+                raw_jobs = resp.json().get("jobs", [])
                 return [self._map_himalayas_job(j) for j in raw_jobs[:limit]]
-
         except Exception as e:
             logger.error(f"Himalayas scraping failed: {e}")
             return []
 
     @staticmethod
     def _map_himalayas_job(j: dict) -> Dict[str, Any]:
-        """Map a Himalayas API job to our standard format."""
         desc_text = j.get("description", "")
         return {
             "external_id": f"himalayas-{j.get('id', '')}",
@@ -1128,5 +1425,120 @@ class WebJobScraper:
             "description": desc_text,
             "description_html": "",
             "source": "himalayas",
+            "posted_date": j.get("publishedAt") or j.get("createdAt"),
+            "scraped_at": datetime.now(),
+        }
+
+    def _greenhouse_boards(self) -> List[str]:
+        env_val = os.getenv("GREENHOUSE_BOARDS", "")
+        if env_val.strip():
+            return [s.strip() for s in env_val.split(",") if s.strip()]
+        return self.DEFAULT_GREENHOUSE_BOARDS
+
+    async def _scrape_greenhouse(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        boards = self._greenhouse_boards()
+        jobs: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
+                tasks = [
+                    client.get(self.GREENHOUSE_BOARD_URL.format(board=board), params={"content": "true"})
+                    for board in boards
+                ]
+                responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for board, response in zip(boards, responses):
+                    if isinstance(response, Exception):
+                        logger.warning(f"Greenhouse board {board} failed: {response}")
+                        continue
+                    if response.status_code != 200:
+                        logger.warning(f"Greenhouse board {board} returned HTTP {response.status_code}")
+                        continue
+                    payload = response.json()
+                    for item in payload.get("jobs", []):
+                        jobs.append(self._map_greenhouse_job(item, board))
+                    if len(jobs) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"Greenhouse scraping failed: {e}")
+            return []
+        return jobs[:limit]
+
+    @staticmethod
+    def _map_greenhouse_job(j: dict, board: str) -> Dict[str, Any]:
+        content = j.get("content") or ""
+        abs_url = j.get("absolute_url") or ""
+        metadata = j.get("metadata") or []
+        location = ""
+        for m in metadata:
+            if str(m.get("name", "")).lower() == "location":
+                location = m.get("value", "")
+                break
+        if not location:
+            location = (j.get("location") or {}).get("name", "Remote") if isinstance(j.get("location"), dict) else "Remote"
+        return {
+            "external_id": f"greenhouse-{j.get('id', '')}",
+            "title": j.get("title", ""),
+            "company": board.capitalize(),
+            "url": abs_url,
+            "location": location,
+            "work_type": "remote" if "remote" in location.lower() else "onsite",
+            "is_easy_apply": False,
+            "apply_url": abs_url,
+            "description": _strip_tags(content),
+            "description_html": content,
+            "source": "greenhouse",
+            "posted_date": j.get("updated_at"),
+            "scraped_at": datetime.now(),
+        }
+
+    def _lever_companies(self) -> List[str]:
+        env_val = os.getenv("LEVER_COMPANIES", "")
+        if env_val.strip():
+            return [s.strip() for s in env_val.split(",") if s.strip()]
+        return self.DEFAULT_LEVER_COMPANIES
+
+    async def _scrape_lever(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        companies = self._lever_companies()
+        jobs: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=HTTP_HEADERS) as client:
+                tasks = [client.get(self.LEVER_BOARD_URL.format(company=company), params={"mode": "json"}) for company in companies]
+                responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for company, response in zip(companies, responses):
+                    if isinstance(response, Exception):
+                        logger.warning(f"Lever company {company} failed: {response}")
+                        continue
+                    if response.status_code != 200:
+                        logger.warning(f"Lever company {company} returned HTTP {response.status_code}")
+                        continue
+                    for item in response.json() if isinstance(response.json(), list) else []:
+                        jobs.append(self._map_lever_job(item, company))
+                    if len(jobs) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"Lever scraping failed: {e}")
+            return []
+        return jobs[:limit]
+
+    @staticmethod
+    def _map_lever_job(j: dict, company: str) -> Dict[str, Any]:
+        categories = j.get("categories") or {}
+        location = categories.get("location", "Remote")
+        description_html = j.get("descriptionPlain") or j.get("description") or ""
+        apply_url = j.get("hostedUrl") or ""
+        return {
+            "external_id": f"lever-{j.get('id', '')}",
+            "title": j.get("text", ""),
+            "company": company.capitalize(),
+            "url": apply_url,
+            "location": location,
+            "work_type": "remote" if "remote" in location.lower() else "onsite",
+            "is_easy_apply": False,
+            "apply_url": apply_url,
+            "description": _strip_tags(description_html),
+            "description_html": description_html,
+            "source": "lever",
+            "posted_date": j.get("createdAt"),
             "scraped_at": datetime.now(),
         }

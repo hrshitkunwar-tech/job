@@ -1,15 +1,68 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from job_search.database import get_db
-from job_search.models import Job
-from job_search.schemas.job import JobResponse, JobListResponse, JobScoreRequest
+from job_search.models import (
+    Job,
+    SearchQuery,
+    Application,
+    ApplicationStatus,
+    ResumeVersion,
+    AutonomousJobLog,
+    AutomationIssueEvent,
+)
+from job_search.schemas.job import (
+    JobResponse,
+    JobListResponse,
+    JobScoreRequest,
+    JobBulkDeleteRequest,
+    JobBulkDeleteResponse,
+)
 
 router = APIRouter()
+
+
+def _collect_fallback_target_roles(db: Session, limit: int = 8) -> list[str]:
+    queries = db.query(SearchQuery).order_by(SearchQuery.id.desc()).limit(limit).all()
+    roles: list[str] = []
+    seen: set[str] = set()
+    for q in queries:
+        raw = q.keywords
+        candidates: list[str] = []
+        if not raw:
+            continue
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        candidates = [str(v) for v in parsed if v]
+                    else:
+                        candidates = [text]
+                except Exception:
+                    candidates = [text]
+            else:
+                candidates = [text]
+        elif isinstance(raw, list):
+            candidates = [str(v) for v in raw if v]
+
+        for item in candidates:
+            role = item.strip()
+            if not role:
+                continue
+            norm = role.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            roles.append(role)
+    return roles
 
 
 @router.get("", response_model=JobListResponse)
@@ -21,6 +74,7 @@ def list_jobs(
     is_archived: bool = False,
     sort: str = "match_score",
     search_id: Optional[int] = None,
+    application_status: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Job).filter(Job.is_archived == is_archived)
@@ -32,6 +86,24 @@ def list_jobs(
         query = query.filter(Job.match_score >= min_score)
     if work_type:
         query = query.filter(Job.work_type == work_type)
+
+    if application_status:
+        status_l = application_status.lower().strip()
+        if status_l == "unapplied":
+            subq = db.query(Application.job_id)
+            query = query.filter(~Job.id.in_(subq))
+        elif status_l == "active_pipeline":
+            query = query.join(Application, Application.job_id == Job.id).filter(
+                Application.status.in_([ApplicationStatus.QUEUED, ApplicationStatus.IN_PROGRESS])
+            )
+        else:
+            try:
+                status_enum = ApplicationStatus(status_l)
+                query = query.join(Application, Application.job_id == Job.id).filter(
+                    Application.status == status_enum
+                )
+            except Exception:
+                pass
 
     total = query.count()
 
@@ -72,11 +144,14 @@ async def score_job(job_id: int, request: JobScoreRequest, db: Session = Depends
     if not profile:
         raise HTTPException(status_code=400, detail="No profile found. Please set up your profile first.")
 
+    fallback_roles = _collect_fallback_target_roles(db)
     profile_dict = {
         "skills": profile.skills or [],
         "experience": profile.experience or [],
-        "target_roles": profile.target_roles or [],
+        "target_roles": profile.target_roles or fallback_roles,
         "target_locations": profile.target_locations or [],
+        "summary": profile.summary or "",
+        "headline": profile.headline or "",
     }
 
     job_dict = {
@@ -127,11 +202,14 @@ def rescore_all_jobs(db: Session = Depends(get_db)):
     if not profile:
         raise HTTPException(status_code=400, detail="No profile found.")
 
+    fallback_roles = _collect_fallback_target_roles(db)
     profile_dict = {
         "skills": profile.skills or [],
         "experience": profile.experience or [],
-        "target_roles": profile.target_roles or [],
+        "target_roles": profile.target_roles or fallback_roles,
         "target_locations": profile.target_locations or [],
+        "summary": profile.summary or "",
+        "headline": profile.headline or "",
     }
 
     matcher = JobMatcher()
@@ -173,3 +251,46 @@ def archive_job(job_id: int, db: Session = Depends(get_db)):
     job.is_archived = True
     db.commit()
     return {"message": "Job archived", "job_id": job.id}
+
+
+@router.post("/bulk-delete", response_model=JobBulkDeleteResponse)
+def bulk_delete_jobs(request: JobBulkDeleteRequest, db: Session = Depends(get_db)):
+    job_ids = sorted({int(job_id) for job_id in request.job_ids if int(job_id) > 0})
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No valid job IDs provided.")
+
+    existing_job_ids = [
+        row[0]
+        for row in db.query(Job.id).filter(Job.id.in_(job_ids)).all()
+    ]
+    if not existing_job_ids:
+        return JobBulkDeleteResponse(deleted=0, deleted_ids=[])
+
+    application_ids = [
+        row[0]
+        for row in db.query(Application.id).filter(Application.job_id.in_(existing_job_ids)).all()
+    ]
+
+    if application_ids:
+        db.query(AutonomousJobLog).filter(
+            or_(
+                AutonomousJobLog.application_id.in_(application_ids),
+                AutonomousJobLog.job_id.in_(existing_job_ids),
+            )
+        ).delete(synchronize_session=False)
+        db.query(AutomationIssueEvent).filter(
+            or_(
+                AutomationIssueEvent.application_id.in_(application_ids),
+                AutomationIssueEvent.job_id.in_(existing_job_ids),
+            )
+        ).delete(synchronize_session=False)
+        db.query(Application).filter(Application.id.in_(application_ids)).delete(synchronize_session=False)
+    else:
+        db.query(AutonomousJobLog).filter(AutonomousJobLog.job_id.in_(existing_job_ids)).delete(synchronize_session=False)
+        db.query(AutomationIssueEvent).filter(AutomationIssueEvent.job_id.in_(existing_job_ids)).delete(synchronize_session=False)
+
+    db.query(ResumeVersion).filter(ResumeVersion.job_id.in_(existing_job_ids)).delete(synchronize_session=False)
+    db.query(Job).filter(Job.id.in_(existing_job_ids)).delete(synchronize_session=False)
+    db.commit()
+
+    return JobBulkDeleteResponse(deleted=len(existing_job_ids), deleted_ids=existing_job_ids)

@@ -37,3 +37,12 @@ class JobListResponse(BaseModel):
 
 class JobScoreRequest(BaseModel):
     deep: bool = False
+
+
+class JobBulkDeleteRequest(BaseModel):
+    job_ids: list[int]
+
+
+class JobBulkDeleteResponse(BaseModel):
+    deleted: int
+    deleted_ids: list[int]

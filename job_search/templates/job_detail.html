@@ -66,10 +66,10 @@
                 <p class="text-xs text-gray-500 mt-1">Applied {{ application.applied_at.strftime('%b %d, %Y') }}</p>
                 {% endif %}
             </div>
-            {% if application.status.value == "queued" %}
+            {% if application.status.value in ["queued", "failed", "reviewed"] %}
             <button onclick="openApplyModal({{ application.id }})"
                 class="w-full mb-3 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700">
-                Auto-Apply
+                {% if application.status.value == "failed" %}Retry Auto-Apply{% else %}Auto-Apply{% endif %}
             </button>
             {% endif %}
             {% if application.automation_log %}
@@ -77,6 +77,18 @@
                 class="w-full mb-3 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-200">
                 View Automation Log
             </button>
+            {% endif %}
+            {% if application.blocker_details %}
+            <div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p class="text-sm font-medium text-amber-900">Automation needs additional details.</p>
+                <p class="text-xs text-amber-800 mt-1">
+                    {{ application.blocker_details.get("message", "Fill missing inputs to continue final submission.") }}
+                </p>
+                <button onclick="openBlockerModal({{ application.id }})"
+                    class="mt-2 w-full px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700">
+                    Resolve And Retry
+                </button>
+            </div>
             {% endif %}
             {% else %}
             <button onclick="applyToJob({{ job.id }})"
@@ -100,7 +112,8 @@
             <h3 class="font-semibold text-gray-900 mb-4">Match Breakdown</h3>
             <div class="space-y-3">
                 {% for dim, label in [("skill_score", "Skills"), ("title_score", "Title"), ("experience_score", "Experience"), ("location_score", "Location"), ("keyword_score", "Keywords")] %}
-                {% set score = job.match_details.get(dim, 0) %}
+                {% set raw_score = job.match_details.get(dim, 0) %}
+                {% set score = raw_score if raw_score is not none else 0 %}
                 <div>
                     <div class="flex justify-between text-sm mb-1">
                         <span class="text-gray-600">{{ label }}</span>
@@ -158,6 +171,24 @@
     </div>
 </div>
 
+<!-- Blocker Resolution Modal -->
+<div id="blockerModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full" onclick="event.stopPropagation();">
+        <div class="p-6 border-b">
+            <h3 class="text-lg font-bold text-gray-900">Resolve Application Blockers</h3>
+        </div>
+        <div id="blockerModalBody" class="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+            <p class="text-gray-500 text-sm">Loading required fields...</p>
+        </div>
+        <div class="flex justify-between gap-3 p-6 border-t bg-gray-50 rounded-b-xl">
+            <button onclick="closeBlockerModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
+            <button id="saveBlockerBtn" onclick="saveBlockerAnswers()" disabled class="px-5 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                Save And Retry
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- Automation Log Modal -->
 <div id="logModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" style="display:none;">
     <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] flex flex-col" onclick="event.stopPropagation();">
@@ -180,6 +211,7 @@
     const JOB_ID = {{ job.id }};
     let currentAppId = null;
     let selectedResumeId = null;
+    let currentBlockerAppId = null;
 
     /* ---- Live refresh while automation runs ---- */
     if (APPLICATION_STATUS === 'in_progress') {
@@ -273,6 +305,11 @@
                 <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                 <span>Resume will be <strong>${strategy}</strong> for this job</span>
             </div>
+
+            <label class="flex items-start gap-2 text-sm bg-amber-50 text-amber-900 px-3 py-2 rounded-lg border border-amber-200">
+                <input id="applySafeMode" type="checkbox" class="mt-0.5 text-indigo-600 focus:ring-indigo-500">
+                <span>Enable safe mode to stop before final submit. Leave unchecked for full auto-submit.</span>
+            </label>
         `;
 
         document.getElementById('confirmApplyBtn').disabled = resumes.length === 0;
@@ -283,21 +320,168 @@
         currentAppId = null;
     }
 
+    async function openBlockerModal(appId) {
+        currentBlockerAppId = appId;
+        const modal = document.getElementById('blockerModal');
+        const body = document.getElementById('blockerModalBody');
+        const btn = document.getElementById('saveBlockerBtn');
+        if (!modal || !body || !btn) return;
+
+        modal.classList.remove('hidden');
+        body.innerHTML = '<p class="text-gray-500 text-sm">Loading required fields...</p>';
+        btn.disabled = true;
+        try {
+            const res = await fetch(`/api/applications/${appId}/blockers`);
+            const data = await res.json();
+            const unresolved = data.unresolved_required_inputs || [];
+            const required = data.required_inputs || [];
+            const rows = unresolved.length ? unresolved : required;
+
+            if (!rows.length) {
+                body.innerHTML = `
+                    <p class="text-sm text-green-700 bg-green-50 border border-green-200 rounded p-3">
+                        No unresolved blocker inputs detected. You can retry automation now.
+                    </p>
+                    <label class="flex items-center gap-2 text-sm">
+                        <input id="blocker-retry-all" type="checkbox" checked class="text-indigo-600">
+                        Retry all blocked applications after this save
+                    </label>
+                    <label class="flex items-center gap-2 text-sm">
+                        <input id="blocker-safe-mode" type="checkbox" class="text-indigo-600">
+                        Safe mode (do not click final submit)
+                    </label>
+                `;
+                btn.disabled = false;
+                return;
+            }
+
+            const fieldsHtml = rows.map((item, idx) => {
+                const key = item.key || `field_${idx}`;
+                const label = item.label || key.replaceAll('_', ' ');
+                const question = item.question || `Provide ${label}`;
+                const type = item.type === 'number' ? 'number' : (item.type === 'email' ? 'email' : 'text');
+                const knownValue = (data.known_answers && data.known_answers[key]) ? String(data.known_answers[key]) : '';
+                return `
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">${label}</label>
+                        <p class="text-xs text-gray-500">${question}</p>
+                        <input data-blocker-key="${key}" type="${type}" value="${knownValue.replace(/"/g, '&quot;')}" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="${label}">
+                    </div>
+                `;
+            }).join('');
+
+            body.innerHTML = `
+                <div class="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900">
+                    ${data.blocker_details?.message || data.notes || 'Automation was blocked. Fill required inputs to continue.'}
+                </div>
+                <div class="space-y-3">${fieldsHtml}</div>
+                <label class="flex items-center gap-2 text-sm">
+                    <input id="blocker-apply-global" type="checkbox" checked class="text-indigo-600">
+                    Save answers globally for future applications
+                </label>
+                <label class="flex items-center gap-2 text-sm">
+                    <input id="blocker-retry-all" type="checkbox" checked class="text-indigo-600">
+                    Retry all blocked applications after this save
+                </label>
+                <label class="flex items-center gap-2 text-sm">
+                    <input id="blocker-safe-mode" type="checkbox" class="text-indigo-600">
+                    Safe mode (do not click final submit)
+                </label>
+            `;
+            btn.disabled = false;
+        } catch (e) {
+            body.innerHTML = '<p class="text-red-600 text-sm">Failed to load blocker details.</p>';
+            btn.disabled = true;
+        }
+    }
+
+    function closeBlockerModal() {
+        const modal = document.getElementById('blockerModal');
+        if (modal) modal.classList.add('hidden');
+        currentBlockerAppId = null;
+    }
+
+    async function saveBlockerAnswers() {
+        if (!currentBlockerAppId) return;
+        const btn = document.getElementById('saveBlockerBtn');
+        const body = document.getElementById('blockerModalBody');
+        if (!btn || !body) return;
+
+        const answers = {};
+        body.querySelectorAll('[data-blocker-key]').forEach((el) => {
+            const key = el.getAttribute('data-blocker-key');
+            const value = (el.value || '').trim();
+            if (key && value) answers[key] = value;
+        });
+        const applyGlobally = !!document.getElementById('blocker-apply-global')?.checked;
+        const retryAll = !!document.getElementById('blocker-retry-all')?.checked;
+        const safeMode = !!document.getElementById('blocker-safe-mode')?.checked;
+
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+            const res = await fetch(`/api/applications/${currentBlockerAppId}/blockers/answers`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    answers,
+                    apply_globally: applyGlobally,
+                    retry_now: true,
+                    retry_all_blocked: retryAll,
+                    safe_mode: safeMode,
+                    require_confirmation: safeMode,
+                    resume_id: selectedResumeId || null
+                })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert(payload.detail || 'Failed to save blocker answers');
+                btn.disabled = false;
+                btn.textContent = 'Save And Retry';
+                return;
+            }
+            closeBlockerModal();
+            location.reload();
+        } catch (e) {
+            alert('Could not save blocker answers');
+            btn.disabled = false;
+            btn.textContent = 'Save And Retry';
+        }
+    }
+
     async function confirmApply() {
         const btn = document.getElementById('confirmApplyBtn');
         btn.disabled = true;
         btn.textContent = 'Launching...';
         try {
+            const preflightRes = await fetch(`/api/applications/${currentAppId}/preflight?resume_id=${selectedResumeId || ''}`);
+            if (preflightRes.ok) {
+                const preflight = await preflightRes.json();
+                if (!preflight.ready) {
+                    const messages = [...(preflight.issues || []), ...(preflight.warnings || [])];
+                    alert(`Cannot start automation yet:\n- ${messages.join('\n- ')}`);
+                    btn.disabled = false;
+                    btn.textContent = 'Start Application';
+                    return;
+                }
+            }
+
             const res = await fetch(`/api/applications/${currentAppId}/automate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ resume_id: selectedResumeId })
+                // Safe mode is optional now; unchecked means full auto-submit attempt.
+                body: JSON.stringify({
+                    resume_id: selectedResumeId,
+                    safe_mode: !!document.getElementById('applySafeMode')?.checked,
+                    require_confirmation: !!document.getElementById('applySafeMode')?.checked
+                })
             });
             if (res.ok) {
                 closeApplyModal();
                 location.reload();
             } else {
-                alert('Failed to start automation');
+                const payload = await res.json().catch(() => ({}));
+                alert(payload.detail || 'Failed to start automation');
                 btn.disabled = false;
                 btn.textContent = 'Start Application';
             }
@@ -310,6 +494,9 @@
 
     document.getElementById('applyModal')?.addEventListener('click', function(e) {
         if (e.target === this) closeApplyModal();
+    });
+    document.getElementById('blockerModal')?.addEventListener('click', function(e) {
+        if (e.target === this) closeBlockerModal();
     });
 
     /* ---- Automation Log Modal ---- */
