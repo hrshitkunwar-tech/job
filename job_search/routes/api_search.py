@@ -41,7 +41,8 @@ def _profile_can_score(profile: UserProfile | None) -> bool:
     has_roles = bool(profile.target_roles)
     has_experience = bool(profile.experience)
     has_summary = bool(profile.summary)
-    return has_skills or has_roles or has_experience or has_summary
+    has_manifesto = bool(profile.technical_manifesto)
+    return has_skills or has_roles or has_experience or has_summary or has_manifesto
 
 
 def _profile_to_dict(profile: UserProfile | None) -> dict[str, Any]:
@@ -53,6 +54,12 @@ def _profile_to_dict(profile: UserProfile | None) -> dict[str, Any]:
             "experience": [],
             "summary": "",
             "headline": "",
+            "technical_manifesto": "",
+            "preferred_team_style": "",
+            "execution_preference": "",
+            "company_stage_preference": "",
+            "autonomy_preference": "",
+            "frontier_tech_interest": None,
         }
     return {
         "skills": profile.skills or [],
@@ -61,14 +68,22 @@ def _profile_to_dict(profile: UserProfile | None) -> dict[str, Any]:
         "experience": profile.experience or [],
         "summary": profile.summary or "",
         "headline": profile.headline or "",
+        "technical_manifesto": profile.technical_manifesto or "",
+        "preferred_team_style": profile.preferred_team_style or "",
+        "execution_preference": profile.execution_preference or "",
+        "company_stage_preference": profile.company_stage_preference or "",
+        "autonomy_preference": profile.autonomy_preference or "",
+        "frontier_tech_interest": profile.frontier_tech_interest,
     }
 
 
 def _unscored_match_details(reason: str) -> dict[str, Any]:
     return {
         "skill_score": None,
+        "vibe_score": None,
         "title_score": None,
         "explanation": "Unscored: profile incomplete",
+        "vibe_explanation": "Complete your manifesto and targeting preferences to unlock culture-fit scoring.",
         "matched_skills": [],
         "missing_skills": [],
         "unscored_reason": reason,
@@ -328,8 +343,10 @@ async def _run_search_task(params: dict, search_id: str, db_search_id: int | Non
                 match_score = match_result.overall_score
                 match_details = {
                     "skill_score": match_result.skill_score,
+                    "vibe_score": match_result.vibe_score,
                     "title_score": match_result.title_score,
                     "explanation": match_result.explanation,
+                    "vibe_explanation": match_result.vibe_explanation,
                     "matched_skills": match_result.matched_skills,
                     "missing_skills": match_result.missing_skills,
                 }

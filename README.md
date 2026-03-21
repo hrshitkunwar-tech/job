@@ -1,6 +1,8 @@
-# job
+# CareerAgent (`job`)
 
 AI-powered job application automation. Scrapes LinkedIn for matching positions, scores them against your profile, tailors your resume for each one, and submits applications automatically.
+
+> Part of **Navigator Lab** alongside the public [navigator](https://github.com/hrshitkunwar-tech/navigator) thesis repo and internal demo surfaces for visual reasoning playback and outreach operations.
 
 Runs entirely locally by default — no cloud API costs required.
 
@@ -24,8 +26,9 @@ You set the thresholds. The bot handles the volume.
 
 | Factor | Weight |
 |---|---|
-| Skill match | 45% |
-| Title match | 35% |
+| Skill match | 25% |
+| Vibe / culture match | 35% |
+| Title match | 20% |
 | Keyword overlap | 10% |
 | Experience level fit | 5% |
 | Location preference | 5% |
@@ -38,6 +41,8 @@ You set the thresholds. The bot handles the volume.
 | < 40 | Poor | Skipped |
 
 Both thresholds are configurable in `.env`.
+
+CareerAgent now treats **Vibe Match** as a first-class signal: startup velocity, ownership level, frontier-tech alignment, and team shape are scored against the candidate's manifesto and preferences.
 
 ---
 

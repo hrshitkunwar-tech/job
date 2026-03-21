@@ -308,39 +308,61 @@
 
         if (!data?.events?.length) {
             progress.textContent = data?.summary || 'No active autonomous run.';
-            container.innerHTML = `
-                <div class="bg-gray-50 rounded-lg border border-dashed border-gray-200 p-4 text-sm text-gray-500">
-                    ${status === 'idle' ? 'Start an autonomous run to see the live reasoning feed.' : 'No heartbeat events yet.'}
-                </div>
-            `;
+            container.replaceChildren();
+            const empty = document.createElement('div');
+            empty.className = 'bg-gray-50 rounded-lg border border-dashed border-gray-200 p-4 text-sm text-gray-500';
+            empty.textContent = status === 'idle'
+                ? 'Start an autonomous run to see the live reasoning feed.'
+                : 'No heartbeat events yet.';
+            container.appendChild(empty);
             return;
         }
 
         const progressData = data.progress || {};
         progress.textContent = `Processed ${progressData.processed_jobs || 0}/${progressData.total_jobs || 0} · Submitted ${progressData.submitted_jobs || 0} · Failed ${progressData.failed_jobs || 0} · Skipped ${progressData.skipped_jobs || 0}`;
+        container.replaceChildren();
 
-        container.innerHTML = data.events.map((event) => {
+        data.events.forEach((event) => {
             const details = event.details || {};
-            const meta = [event.actor, event.stage, event.status].filter(Boolean).join(' · ');
-            return `
-                <div class="rounded-lg border border-gray-200 p-4">
-                    <div class="flex items-start justify-between gap-3">
-                        <div>
-                            <div class="text-xs uppercase tracking-wide font-semibold text-gray-400">${meta}</div>
-                            <div class="text-sm font-medium text-gray-900 mt-1">${event.summary}</div>
-                        </div>
-                        <div class="text-xs text-gray-400 whitespace-nowrap">${event.created_at ? new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live'}</div>
-                    </div>
-                    ${(details.message || details.attempts || details.application_id) ? `
-                        <div class="mt-2 text-xs text-gray-500">
-                            ${details.application_id ? `App #${details.application_id}` : ''}
-                            ${details.attempts ? `${details.application_id ? ' · ' : ''}${details.attempts} attempt(s)` : ''}
-                            ${details.message ? `${(details.application_id || details.attempts) ? ' · ' : ''}${details.message}` : ''}
-                        </div>
-                    ` : ''}
-                </div>
-            `;
-        }).join('');
+            const card = document.createElement('div');
+            card.className = 'rounded-lg border border-gray-200 p-4';
+
+            const header = document.createElement('div');
+            header.className = 'flex items-start justify-between gap-3';
+
+            const left = document.createElement('div');
+            const meta = document.createElement('div');
+            meta.className = 'text-xs uppercase tracking-wide font-semibold text-gray-400';
+            meta.textContent = [event.actor, event.stage, event.status].filter(Boolean).join(' · ');
+            const summary = document.createElement('div');
+            summary.className = 'text-sm font-medium text-gray-900 mt-1';
+            summary.textContent = event.summary || 'Telemetry event';
+            left.appendChild(meta);
+            left.appendChild(summary);
+
+            const time = document.createElement('div');
+            time.className = 'text-xs text-gray-400 whitespace-nowrap';
+            time.textContent = event.created_at
+                ? new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : 'Live';
+
+            header.appendChild(left);
+            header.appendChild(time);
+            card.appendChild(header);
+
+            if (details.message || details.attempts || details.application_id) {
+                const detailsLine = document.createElement('div');
+                detailsLine.className = 'mt-2 text-xs text-gray-500';
+                const parts = [];
+                if (details.application_id) parts.push(`App #${details.application_id}`);
+                if (details.attempts) parts.push(`${details.attempts} attempt(s)`);
+                if (details.message) parts.push(String(details.message));
+                detailsLine.textContent = parts.join(' · ');
+                card.appendChild(detailsLine);
+            }
+
+            container.appendChild(card);
+        });
     }
 
     async function loadHeartbeat() {

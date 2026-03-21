@@ -46,6 +46,12 @@ def _run_lightweight_migrations():
         "work_authorization": "TEXT",
         "requires_sponsorship": "INTEGER",
         "application_answers": "JSON",
+        "technical_manifesto": "TEXT",
+        "preferred_team_style": "TEXT",
+        "execution_preference": "TEXT",
+        "company_stage_preference": "TEXT",
+        "autonomy_preference": "TEXT",
+        "frontier_tech_interest": "INTEGER",
     }
 
     application_columns = {

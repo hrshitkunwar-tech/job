@@ -71,6 +71,12 @@ class MatchScoringAgent:
             "experience": profile.experience or [],
             "summary": profile.summary or "",
             "headline": profile.headline or "",
+            "technical_manifesto": profile.technical_manifesto or "",
+            "preferred_team_style": profile.preferred_team_style or "",
+            "execution_preference": profile.execution_preference or "",
+            "company_stage_preference": profile.company_stage_preference or "",
+            "autonomy_preference": profile.autonomy_preference or "",
+            "frontier_tech_interest": profile.frontier_tech_interest,
         }
         job_dict = {
             "title": job.title,
@@ -85,6 +91,8 @@ class MatchScoringAgent:
             "experience_score": result.experience_score,
             "location_score": result.location_score,
             "keyword_score": result.keyword_score,
+            "vibe_score": result.vibe_score,
+            "vibe_explanation": result.vibe_explanation,
             "explanation": result.explanation,
             "matched_skills": result.matched_skills,
             "missing_skills": result.missing_skills,

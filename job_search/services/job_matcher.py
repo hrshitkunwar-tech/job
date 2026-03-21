@@ -24,6 +24,7 @@ class MatchResult:
     location_score: float = 0.0
     keyword_score: float = 0.0
     vibe_score: float = 0.0
+    vibe_explanation: str = ""
     matched_skills: list[str] = field(default_factory=list)
     missing_skills: list[str] = field(default_factory=list)
     extracted_keywords: list[str] = field(default_factory=list)
@@ -114,7 +115,7 @@ class JobMatcher:
         location_score = self._score_location(
             job.get("location", ""), job.get("work_type", ""), target_locations
         )
-        vibe_score = self._score_vibe(description)
+        vibe_score, vibe_explanation = self._score_vibe(description, profile)
 
         keywords = extract_keywords(description)
         keyword_score = self._score_keyword_overlap(keywords, user_skills)
@@ -141,6 +142,7 @@ class JobMatcher:
             overall_score=round(overall, 1),
             skill_score=round(skill_score, 1),
             vibe_score=round(vibe_score, 1),
+            vibe_explanation=vibe_explanation,
             title_score=round(title_score, 1),
             experience_score=round(experience_score, 1),
             location_score=round(location_score, 1),
@@ -151,6 +153,7 @@ class JobMatcher:
             recommendation=recommendation,
             explanation=f"Overall {recommendation.replace('_', ' ')}: {round(overall)}% match. "
                         f"Vibe Score: {round(vibe_score, 1)}. "
+                        f"{vibe_explanation} "
                         f"{len(matched)} of your skills matched.",
         )
 
@@ -249,30 +252,127 @@ class JobMatcher:
         matched = sum(1 for kw in jd_keywords[:20] if normalize_skill(kw) in user_normalized)
         return min((matched / min(len(jd_keywords), 20)) * 100, 100.0)
 
-    def _score_vibe(self, description: str) -> float:
-        """Heuristic vibe score matching the candidate's technical manifesto and culture preferences."""
+    def _score_vibe(self, description: str, profile: dict) -> tuple[float, str]:
+        """Match job culture against the user's technical manifesto and working-style preferences."""
         vibe_keywords = [
-            "autonomous", "agent", "frontier", "velocity", "ownership", 
-            "fast-paced", "zero to one", "founder", "ai-first", "agi", 
+            "autonomous", "agent", "frontier", "velocity", "ownership",
+            "fast-paced", "zero to one", "founder", "ai-first", "agentic",
             "hacker", "sovereign", "builder", "startup"
         ]
         corporate_keywords = [
-            "bureaucracy", "enterprise", "legacy", "red tape", "slow", 
+            "bureaucracy", "enterprise", "legacy", "red tape", "slow",
             "processes", "synergy", "corporate", "waterfall"
         ]
-        
+
         desc_lower = description.lower()
         score = 50.0
-        
+        matched_signals: list[str] = []
+        friction_signals: list[str] = []
+
         for kw in vibe_keywords:
             if kw in desc_lower:
                 score += 15.0
-                
+                matched_signals.append(kw)
+
         for kw in corporate_keywords:
             if kw in desc_lower:
                 score -= 10.0
-                
-        return min(max(score, 0.0), 100.0)
+                friction_signals.append(kw)
+
+        manifesto = " ".join(
+            filter(
+                None,
+                [
+                    profile.get("technical_manifesto", ""),
+                    profile.get("summary", ""),
+                    profile.get("headline", ""),
+                ],
+            )
+        ).lower()
+        preferred_team_style = (profile.get("preferred_team_style") or "").lower()
+        execution_preference = (profile.get("execution_preference") or "").lower()
+        company_stage_preference = (profile.get("company_stage_preference") or "").lower()
+        autonomy_preference = (profile.get("autonomy_preference") or "").lower()
+        frontier_interest = profile.get("frontier_tech_interest") or 0
+
+        startup_tokens = ["startup", "zero to one", "founder", "seed", "series a", "early stage"]
+        frontier_tokens = ["frontier", "ai-first", "agent", "llm", "agents", "research"]
+        ownership_tokens = ["ownership", "autonomous", "independent", "self-starter", "builder"]
+        process_tokens = ["process", "structured", "compliance", "stakeholder", "cross-functional"]
+
+        if preferred_team_style == "builder-led":
+            if any(token in desc_lower for token in ownership_tokens):
+                score += 12.0
+                matched_signals.append("builder-led ownership")
+            if "manager" in desc_lower and "approval" in desc_lower:
+                score -= 6.0
+                friction_signals.append("approval-heavy structure")
+        elif preferred_team_style == "research-heavy":
+            if any(token in desc_lower for token in frontier_tokens):
+                score += 10.0
+                matched_signals.append("research-forward environment")
+        elif preferred_team_style == "mission-driven":
+            if "mission" in desc_lower or "purpose" in desc_lower:
+                score += 8.0
+                matched_signals.append("mission-driven team")
+
+        if execution_preference == "speed":
+            if "fast-paced" in desc_lower or "velocity" in desc_lower:
+                score += 10.0
+                matched_signals.append("startup velocity")
+            if any(token in desc_lower for token in process_tokens):
+                score -= 5.0
+                friction_signals.append("process-heavy execution")
+        elif execution_preference == "process" and any(token in desc_lower for token in process_tokens):
+            score += 6.0
+            matched_signals.append("structured execution")
+
+        if company_stage_preference == "startup" and any(token in desc_lower for token in startup_tokens):
+            score += 12.0
+            matched_signals.append("startup stage")
+        elif company_stage_preference == "enterprise" and "enterprise" in desc_lower:
+            score += 8.0
+            matched_signals.append("enterprise scale")
+        elif company_stage_preference == "growth" and ("series b" in desc_lower or "scale" in desc_lower):
+            score += 8.0
+            matched_signals.append("growth-stage scale")
+
+        if autonomy_preference == "high" and any(token in desc_lower for token in ownership_tokens):
+            score += 10.0
+            matched_signals.append("high autonomy")
+        elif autonomy_preference == "low" and any(token in desc_lower for token in process_tokens):
+            score += 5.0
+            matched_signals.append("guided execution")
+
+        if frontier_interest >= 7 and any(token in desc_lower for token in frontier_tokens):
+            score += 12.0
+            matched_signals.append("frontier-tech exposure")
+        elif frontier_interest <= 3 and any(token in desc_lower for token in frontier_tokens):
+            score -= 3.0
+            friction_signals.append("frontier-heavy role")
+
+        if "sovereign" in manifesto and "sovereign" in desc_lower:
+            score += 8.0
+            matched_signals.append("sovereign systems")
+        if "agent" in manifesto and "agent" in desc_lower:
+            score += 8.0
+            matched_signals.append("agentic workflows")
+        if "velocity" in manifesto and "velocity" in desc_lower:
+            score += 6.0
+            matched_signals.append("developer velocity")
+
+        score = min(max(score, 0.0), 100.0)
+        # Python preserves insertion order; build a compact explanation without repeated labels.
+        unique_matched = list(dict.fromkeys(matched_signals))
+        unique_friction = list(dict.fromkeys(friction_signals))
+        summary_parts = []
+        if unique_matched:
+            summary_parts.append(f"Aligned on {', '.join(unique_matched[:3])}")
+        if unique_friction:
+            summary_parts.append(f"Watchouts: {', '.join(unique_friction[:2])}")
+        if not summary_parts:
+            summary_parts.append("Neutral culture signal; role needs more manifesto detail")
+        return score, ". ".join(summary_parts) + "."
 
     async def score_job_deep(self, job: dict, profile: dict) -> MatchResult:
         """LLM-assisted deep scoring."""
@@ -310,6 +410,7 @@ Return JSON:
             base_result.overall_score = result.get("overall_score", base_result.overall_score)
             base_result.vibe_score = result.get("vibe_score", base_result.vibe_score)
             base_result.explanation = result.get("explanation", base_result.explanation)
+            base_result.vibe_explanation = result.get("vibe_explanation", base_result.vibe_explanation or base_result.explanation)
             if result.get("missing_skills"):
                 base_result.missing_skills = result["missing_skills"]
         except Exception as e:

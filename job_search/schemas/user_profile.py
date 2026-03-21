@@ -10,6 +10,12 @@ class UserProfileUpdate(BaseModel):
     linkedin_url: Optional[str] = None
     headline: Optional[str] = None
     summary: Optional[str] = None
+    technical_manifesto: Optional[str] = None
+    preferred_team_style: Optional[str] = None
+    execution_preference: Optional[str] = None
+    company_stage_preference: Optional[str] = None
+    autonomy_preference: Optional[str] = None
+    frontier_tech_interest: Optional[int] = None
     skills: Optional[list[str]] = None
     experience: Optional[list[dict]] = None
     education: Optional[list[dict]] = None

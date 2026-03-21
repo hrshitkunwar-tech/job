@@ -152,6 +152,12 @@ async def score_job(job_id: int, request: JobScoreRequest, db: Session = Depends
         "target_locations": profile.target_locations or [],
         "summary": profile.summary or "",
         "headline": profile.headline or "",
+        "technical_manifesto": profile.technical_manifesto or "",
+        "preferred_team_style": profile.preferred_team_style or "",
+        "execution_preference": profile.execution_preference or "",
+        "company_stage_preference": profile.company_stage_preference or "",
+        "autonomy_preference": profile.autonomy_preference or "",
+        "frontier_tech_interest": profile.frontier_tech_interest,
     }
 
     job_dict = {
@@ -177,6 +183,8 @@ async def score_job(job_id: int, request: JobScoreRequest, db: Session = Depends
         "experience_score": result.experience_score,
         "location_score": result.location_score,
         "keyword_score": result.keyword_score,
+        "vibe_score": result.vibe_score,
+        "vibe_explanation": result.vibe_explanation,
         "matched_skills": result.matched_skills,
         "missing_skills": result.missing_skills,
         "recommendation": result.recommendation,
@@ -210,6 +218,12 @@ def rescore_all_jobs(db: Session = Depends(get_db)):
         "target_locations": profile.target_locations or [],
         "summary": profile.summary or "",
         "headline": profile.headline or "",
+        "technical_manifesto": profile.technical_manifesto or "",
+        "preferred_team_style": profile.preferred_team_style or "",
+        "execution_preference": profile.execution_preference or "",
+        "company_stage_preference": profile.company_stage_preference or "",
+        "autonomy_preference": profile.autonomy_preference or "",
+        "frontier_tech_interest": profile.frontier_tech_interest,
     }
 
     matcher = JobMatcher()
@@ -231,6 +245,8 @@ def rescore_all_jobs(db: Session = Depends(get_db)):
             "experience_score": result.experience_score,
             "location_score": result.location_score,
             "keyword_score": result.keyword_score,
+            "vibe_score": result.vibe_score,
+            "vibe_explanation": result.vibe_explanation,
             "matched_skills": result.matched_skills,
             "missing_skills": result.missing_skills,
             "recommendation": result.recommendation,

@@ -32,8 +32,16 @@
         <div class="text-[10px] text-gray-400 uppercase font-semibold">Match Profile</div>
         <div class="text-[10px] text-gray-500 flex gap-3">
             <span>Skills: {{ "%.0f"|format(job.match_details.skill_score or 0) }}%</span>
+            {% if job.match_details.get("vibe_score") is not none %}
+            <span>Vibe: {{ "%.0f"|format(job.match_details.vibe_score or 0) }}%</span>
+            {% endif %}
             <span>Title: {{ "%.0f"|format(job.match_details.title_score or 0) }}%</span>
         </div>
     </div>
+    {% if job.match_details.get("vibe_explanation") %}
+    <div class="mt-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+        <span class="font-semibold">Vibe Match:</span> {{ job.match_details.get("vibe_explanation") }}
+    </div>
+    {% endif %}
     {% endif %}
 </div>
