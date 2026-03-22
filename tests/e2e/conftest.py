@@ -45,6 +45,12 @@ def _start_server(app_port, tmp_path_factory):
     db_path = db_dir / "test_job_search.db"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 
+    # Reset the lazy engine so it picks up the new DATABASE_URL even if a
+    # prior import (e.g. from a unit test using TestClient) already created
+    # an engine pointing at the live database.
+    from job_search.database import reset_engine
+    reset_engine()
+
     # Ensure required directories exist for static file mounts.
     os.makedirs("job_search/static/uploads", exist_ok=True)
     os.makedirs("job_search/static/generated", exist_ok=True)

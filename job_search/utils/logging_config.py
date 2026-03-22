@@ -17,14 +17,17 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry)
 
 def setup_logging():
+    import os
+    os.makedirs("data", exist_ok=True)
+
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    
+
     # Console handler
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
-    
+
     # File handler (JSON)
     file_handler = logging.FileHandler("data/app.log")
     file_handler.setFormatter(JSONFormatter())

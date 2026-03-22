@@ -69,7 +69,7 @@ def test_postal_code_defaults_to_six_digits():
     user = UserProfile(full_name="Candidate", email="candidate@example.com")
     key = applier._input_key_from_meta("Postal code", "text")
     assert key == "postal_code"
-    assert applier._answer_value_for_key(key, user, {}) == "110001"
+    assert applier._answer_value_for_key(key, user, {}) == "560102"
 
 
 def test_classify_issue_for_postal_code_error():
@@ -121,7 +121,7 @@ def test_runtime_overrides_generate_contact_defaults_when_missing():
     assert overrides["phone_type"] == "mobile"
     assert overrides["phone_country_code"] == "+91"
     assert overrides["phone_extension"] == "0"
-    assert overrides["postal_code"] == "560001"
+    assert overrides["postal_code"] == "560102"
     assert overrides["city"] == "Bengaluru"
     assert sources["postal_code"] in {"generated_placeholder", "profile", "resume", "previous_applications"}
 
