@@ -25,6 +25,19 @@ from job_search.models import (
 )
 from job_search.database import SessionLocal
 from job_search.services.apply_url_resolver import resolve_official_apply_url
+from job_search.services import field_resolution
+from job_search.services.defaults_config import (
+    DEFAULT_MOBILE_NUMBER,
+    DEFAULT_PHONE_COUNTRY_CODE,
+    DEFAULT_SOURCE_CHANNEL,
+    DEFAULT_SOURCE_PLATFORM,
+    DEFAULT_SOURCE_ANSWER,
+    DEFAULT_POSTAL_CODE,
+    DEFAULT_COUNTRY,
+    DEFAULT_CITY,
+    DEFAULT_STATE,
+    DEFAULT_ADDRESS_LINE_1,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,26 +45,20 @@ logger = logging.getLogger(__name__)
 class JobApplier:
     def __init__(self):
         self.headless = settings.browser_headless
-        self.default_mobile_number = "9319135101"
-        self.default_phone_country_code = "+91"
-        self.default_source_channel = "Social Media"
-        self.default_source_platform = "LinkedIn"
-        self.default_source_answer = "LinkedIn"
-        self.default_postal_code = "560102"
-        self.default_country = "India"
-        self.default_city = "Bangalore"
-        self.default_state = "Karnataka"
-        self.default_address_line_1 = "HSR Layout"
+        self.default_mobile_number = DEFAULT_MOBILE_NUMBER
+        self.default_phone_country_code = DEFAULT_PHONE_COUNTRY_CODE
+        self.default_source_channel = DEFAULT_SOURCE_CHANNEL
+        self.default_source_platform = DEFAULT_SOURCE_PLATFORM
+        self.default_source_answer = DEFAULT_SOURCE_ANSWER
+        self.default_postal_code = DEFAULT_POSTAL_CODE
+        self.default_country = DEFAULT_COUNTRY
+        self.default_city = DEFAULT_CITY
+        self.default_state = DEFAULT_STATE
+        self.default_address_line_1 = DEFAULT_ADDRESS_LINE_1
 
     @staticmethod
     def _is_truthy(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-        return False
+        return field_resolution.is_truthy(value)
 
     def _stop_requested(self, app: Optional[Application]) -> bool:
         if not app or not isinstance(getattr(app, "user_inputs", None), dict):
@@ -80,87 +87,21 @@ class JobApplier:
         return True
 
     def _normalize_mobile_number(self, raw: Optional[str]) -> str:
-        """
-        Return a 10-digit mobile number with no spaces.
-        Preference order:
-        1) digits extracted from provided value (last 10 digits),
-        2) configured default mobile number.
-        """
-        digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
-        if len(digits) >= 10:
-            return digits[-10:]
-        default_digits = "".join(ch for ch in self.default_mobile_number if ch.isdigit())
-        if len(default_digits) == 10:
-            return default_digits
-        return "0000000000"
+        return field_resolution.normalize_mobile_number(raw, self.default_mobile_number)
 
     @staticmethod
     def _clean_value(value: Any) -> str:
-        if value is None:
-            return ""
-        return str(value).strip()
+        return field_resolution.clean_value(value)
 
     def _extract_name_parts(
         self,
         user: Optional[UserProfile],
         parsed_resume: Optional[dict[str, Any]] = None,
     ) -> tuple[str, str, str]:
-        parsed_resume = parsed_resume or {}
-        full_name = (
-            self._clean_value(getattr(user, "full_name", None))
-            or self._clean_value(parsed_resume.get("name"))
-            or self._clean_value(parsed_resume.get("full_name"))
-            or "Candidate Kunwar"
-        )
-        parts = [p for p in full_name.split() if p]
-        first_name = (parts[0] if parts else "Candidate").title()
-        last_name = (
-            parts[-1].title()
-            if len(parts) > 1
-            else ("Kunwar" if first_name.lower() == "candidate" else first_name.title())
-        )
-        full_name = " ".join(parts).strip() or f"{first_name} {last_name}"
-        return full_name, first_name, last_name
+        return field_resolution.extract_name_parts(user, parsed_resume)
 
     def _location_parts(self, location_text: str) -> tuple[str, str, str]:
-        text = self._clean_value(location_text)
-        if not text:
-            return self.default_city, self.default_state, self.default_country
-        lowered = text.lower()
-        city_to_state = {
-            "new delhi": "Delhi",
-            "delhi": "Delhi",
-            "gurgaon": "Haryana",
-            "gurugram": "Haryana",
-            "noida": "Uttar Pradesh",
-            "mumbai": "Maharashtra",
-            "bengaluru": "Karnataka",
-            "bangalore": "Karnataka",
-            "hyderabad": "Telangana",
-            "chennai": "Tamil Nadu",
-            "pune": "Maharashtra",
-            "kolkata": "West Bengal",
-            "ahmedabad": "Gujarat",
-            "jaipur": "Rajasthan",
-        }
-        city_guess = ""
-        state_guess = ""
-        for city, state in city_to_state.items():
-            if city in lowered:
-                city_guess = city.title().replace("Bangalore", "Bengaluru")
-                state_guess = state
-                break
-        if not city_guess:
-            # Use first tokenized location segment as city fallback.
-            city_guess = text.split(",")[0].strip().title() or self.default_city
-        if not state_guess:
-            state_guess = self.default_state
-        country_guess = self.default_country
-        if any(tok in lowered for tok in ("usa", "united states", "us,", "u.s.")):
-            country_guess = "United States"
-        elif any(tok in lowered for tok in ("uk", "united kingdom", "england")):
-            country_guess = "United Kingdom"
-        return city_guess, state_guess, country_guess
+        return field_resolution.location_parts(location_text)
 
     def _collect_previous_application_answers(self, db) -> dict[str, Any]:
         learned: dict[str, Any] = {}
@@ -515,35 +456,7 @@ class JobApplier:
             return ""
 
     def _postal_code_from_location_text(self, location_text: str) -> Optional[str]:
-        text = (location_text or "").strip()
-        if not text:
-            return None
-        # Prefer explicit postal code if already present.
-        direct = re.search(r"\b(\d{6})\b", text)
-        if direct:
-            return direct.group(1)
-        city_map = {
-            "hsr layout": "560102",
-            "new delhi": "110001",
-            "delhi": "110001",
-            "gurgaon": "122001",
-            "gurugram": "122001",
-            "noida": "201301",
-            "mumbai": "400001",
-            "bengaluru": "560102",
-            "bangalore": "560102",
-            "hyderabad": "500001",
-            "chennai": "600001",
-            "pune": "411001",
-            "kolkata": "700001",
-            "ahmedabad": "380001",
-            "jaipur": "302001",
-        }
-        lowered = text.lower()
-        for city, code in city_map.items():
-            if city in lowered:
-                return code
-        return None
+        return field_resolution.postal_code_from_location_text(location_text)
 
     def _augment_overrides_with_defaults(
         self,
@@ -1341,15 +1254,7 @@ class JobApplier:
 
     @staticmethod
     def _issue_context(job: Optional[Job]) -> tuple[Optional[str], Optional[str]]:
-        if not job:
-            return None, None
-        source = (job.source or "").lower() or None
-        url = job.apply_url or job.url or ""
-        try:
-            domain = (urllib.parse.urlparse(url).hostname or "").lower() or None
-        except Exception:
-            domain = None
-        return source, domain
+        return field_resolution.issue_context(job)
 
     def _classify_issue(
         self,
@@ -1357,120 +1262,7 @@ class JobApplier:
         job: Optional[Job],
         user: Optional[UserProfile],
     ) -> tuple[str, list[str], list[str]]:
-        text = (message or "").lower()
-        category = "automation_issue"
-        required_inputs: list[str] = []
-        questions: list[str] = []
-
-        if "anti-bot" in text or "cloudflare" in text or "security verification" in text:
-            category = "anti_bot_challenge"
-            required_inputs = ["manual_challenge_verification"]
-            questions = [
-                "Can you complete anti-bot verification in the opened apply window when prompted?"
-            ]
-        elif "page crashed" in text or "target closed" in text or "browser has disconnected" in text:
-            category = "browser_crash"
-            required_inputs = []
-            questions = []
-        elif "already applied" in text or "application already submitted" in text:
-            category = "already_applied_detected"
-            required_inputs = []
-            questions = []
-        elif "automation completed" in text or "submitted successfully" in text:
-            category = "submission_success"
-            required_inputs = []
-            questions = []
-        elif "linkedin login required" in text:
-            category = "linkedin_login_required"
-            required_inputs = ["linkedin_authenticated_session"]
-            questions = [
-                "Are you logged into LinkedIn in the automation popup window?"
-            ]
-        elif "requires sign-in" in text or "sign-in not completed" in text or "account creation required" in text:
-            category = "portal_login_required"
-            required_inputs = ["portal_authenticated_session"]
-            questions = [
-                "Does this application portal require sign-in/account creation before applying?",
-                "Can you complete the sign-in once in the opened automation window so we can save the session for future runs?",
-            ]
-        elif "no linkedin apply action found" in text:
-            category = "linkedin_apply_action_missing"
-            required_inputs = ["posting_state_confirmation"]
-            questions = [
-                "Does the posting show 'Applied/Application submitted' or 'No longer accepting applications'?"
-            ]
-        elif "apply button was not interactable" in text:
-            category = "linkedin_apply_interaction_blocked"
-            required_inputs = ["linkedin_visibility_state"]
-            questions = [
-                "After opening the job, do you see an enabled Apply/Easy Apply button?"
-            ]
-        elif "could not detect final submit button" in text or "no final submit control detected" in text:
-            category = "final_submit_detection_failed"
-            required_inputs = ["screening_answers", "portal_specific_submit_label"]
-            questions = [
-                "Which button label appears on the last step (Submit, Apply, Send, Complete)?",
-                "Are there any required unanswered screening fields visible before final submit?",
-            ]
-        elif "verification code" in text or "one-time password" in text or "otp" in text:
-            category = "verification_code_required"
-            required_inputs = ["verification_code"]
-            questions = [
-                "Enter the verification code sent by the employer portal so automation can continue."
-            ]
-        elif "how did you hear about us" in text or "hear about us is required" in text:
-            category = "required_source_missing"
-            required_inputs = ["hear_about_us"]
-            questions = [
-                "What source should be used for 'How did you hear about us?'"
-            ]
-        elif "postal code must be 6 digits" in text or "postal code" in text and "required" in text:
-            category = "postal_code_required"
-            required_inputs = ["postal_code"]
-            questions = [
-                "Provide a valid 6-digit postal code for this application."
-            ]
-        elif "profile missing required fields" in text:
-            category = "profile_missing_required_fields"
-            required_inputs = ["full_name", "email"]
-            questions = [
-                "Please provide your full name and primary email for applications."
-            ]
-        elif "score" in text and "below threshold" in text:
-            category = "threshold_skip"
-            required_inputs = ["min_score_preference"]
-            questions = [
-                "Should automation include jobs below your current minimum score threshold?"
-            ]
-        elif "unsupported source for automation" in text:
-            category = "unsupported_source"
-            required_inputs = ["source_preference"]
-            questions = [
-                "Should we skip unsupported sources automatically or keep them for manual apply?"
-            ]
-
-        # Enrich with known profile-driven screening inputs.
-        if user:
-            if user.expected_ctc_lpa is None:
-                required_inputs.append("expected_ctc_lpa")
-                questions.append("What is your expected CTC in LPA?")
-            if user.current_ctc_lpa is None:
-                required_inputs.append("current_ctc_lpa")
-                questions.append("What is your current CTC in LPA?")
-            if user.notice_period_days is None:
-                required_inputs.append("notice_period_days")
-                questions.append("What is your notice period in days?")
-
-        # Keep deterministic uniqueness.
-        required_inputs = sorted(set(required_inputs))
-        dedup_questions: list[str] = []
-        seen_q = set()
-        for q in questions:
-            if q in seen_q:
-                continue
-            seen_q.add(q)
-            dedup_questions.append(q)
-        return category, required_inputs, dedup_questions
+        return field_resolution.classify_issue(message, job, user)
 
     def _record_issue_event(
         self,
@@ -1522,256 +1314,22 @@ class JobApplier:
 
     @staticmethod
     def _normalize_input_key(raw: str) -> str:
-        cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in (raw or ""))
-        while "__" in cleaned:
-            cleaned = cleaned.replace("__", "_")
-        return cleaned.strip("_")
+        return field_resolution.normalize_input_key(raw)
 
     def _input_key_from_meta(self, meta: str, input_type: str = "") -> str:
-        text = (meta or "").lower()
-        i_type = (input_type or "").lower()
-
-        if any(tok in text for tok in ("verification code", "otp", "one time password", "security code", "passcode", "pin")):
-            return "verification_code"
-        if "password" in text:
-            return "password"
-        if any(tok in text for tok in ("expected ctc", "expected salary", "expected compensation", "expected pay")):
-            return "expected_ctc_lpa"
-        if any(tok in text for tok in ("current ctc", "current salary", "current compensation", "present ctc", "present salary")):
-            return "current_ctc_lpa"
-        if any(tok in text for tok in ("notice period", "notice in days")):
-            return "notice_period_days"
-        if any(tok in text for tok in ("postal code", "zip code", "zipcode", "pin code", "pincode")):
-            return "postal_code"
-        if any(tok in text for tok in ("address line 1", "address1", "street address", "street", "line1 address")):
-            return "address_line_1"
-        if any(tok in text for tok in ("address line 2", "address2", "apartment", "suite", "flat number")):
-            return "address_line_2"
-        if any(tok in text for tok in ("city", "town")):
-            return "city"
-        if any(tok in text for tok in ("state", "province", "region")):
-            return "state"
-        if any(tok in text for tok in ("country", "nationality country")):
-            return "country"
-        if any(
-            tok in text
-            for tok in (
-                "which social media",
-                "social media platform",
-                "platform used",
-                "social channel",
-            )
-        ):
-            return "hear_about_us_platform"
-        if any(tok in text for tok in ("join immediately", "immediate joining", "availability to join", "available to join")):
-            return "can_join_immediately"
-        if any(
-            tok in text
-            for tok in (
-                "previous email",
-                "email in trend micro",
-                "former email",
-                "old email",
-            )
-        ):
-            return "previous_company_email"
-        if any(tok in text for tok in ("email", "e-mail", "mail")):
-            return "email"
-        if any(
-            tok in text
-            for tok in (
-                "previous employee id",
-                "employee id in trend micro",
-                "former employee id",
-            )
-        ):
-            return "previous_employee_id"
-        if any(
-            tok in text
-            for tok in (
-                "previous manager name",
-                "manager name in trend micro",
-                "former manager name",
-            )
-        ):
-            return "previous_manager_name"
-        if any(
-            tok in text
-            for tok in (
-                "applied in the past",
-                "applied before",
-                "previously applied",
-                "have you applied",
-            )
-        ):
-            return "applied_before"
-        if any(
-            tok in text
-            for tok in (
-                "have you previously worked for",
-                "previously worked for",
-                "worked here before",
-                "worked for this company",
-                "worked at this company",
-                "worked for subsidiary",
-                "worked for any subsidiary",
-                "employed by subsidiary",
-            )
-        ):
-            return "worked_here_before"
-        if any(tok in text for tok in ("relocate", "relocation")):
-            return "willing_to_relocate"
-        if any(tok in text for tok in ("sponsor", "sponsorship", "visa support")):
-            return "requires_sponsorship"
-        if any(tok in text for tok in ("authorized to work", "work authorization", "work permit")):
-            return "work_authorization"
-        if any(tok in text for tok in ("phone type", "contact type", "type of phone", "number type")):
-            return "phone_type"
-        if any(tok in text for tok in ("phone device type", "device type")) and "phone" in text:
-            return "phone_type"
-        if any(tok in text for tok in ("phone extension", "extension")) and "phone" in text:
-            return "phone_extension"
-        if "extension" in text and i_type in {"text", "number", "tel"}:
-            return "phone_extension"
-        if any(tok in text for tok in ("country code", "dial code", "phone country", "mobile country code")) and any(
-            tok in text for tok in ("phone", "mobile", "contact", "dial")
-        ):
-            return "phone_country_code"
-        if any(
-            tok in text
-            for tok in (
-                "how did you hear",
-                "hear about us",
-                "where did you hear",
-                "source of application",
-                "how did you find",
-                "referral source",
-                "job source",
-            )
-        ):
-            return "hear_about_us"
-        if any(tok in text for tok in ("linkedin", "linkedin url", "linkedin profile")):
-            return "linkedin_url"
-        if any(tok in text for tok in ("phone", "mobile", "telephone", "contact number")):
-            return "phone"
-        if any(tok in text for tok in ("years of experience", "experience in years", "total experience")):
-            return "total_experience_years"
-        if any(tok in text for tok in ("full name", "applicant name", "candidate name")):
-            return "full_name"
-        if any(tok in text for tok in ("local given name", "given name local")):
-            return "local_given_name"
-        if any(tok in text for tok in ("local family name", "family name local")):
-            return "local_family_name"
-        if any(tok in text for tok in ("legal first name", "legal given name")):
-            return "first_name"
-        if any(tok in text for tok in ("legal last name", "legal family name", "legal surname")):
-            return "last_name"
-        if any(tok in text for tok in ("first name", "given name")):
-            return "first_name"
-        if any(tok in text for tok in ("last name", "surname", "family name")):
-            return "last_name"
-        if "address" in text and "email" not in text:
-            return "address_line_1"
-        if any(tok in text for tok in ("city", "location")):
-            return "location"
-        if "username" in text or "user id" in text:
-            return "email"
-        if i_type == "file":
-            return "resume_file"
-        return self._normalize_input_key(text[:80]) or "required_input"
+        return field_resolution.input_key_from_meta(meta, input_type)
 
     def _input_question(self, key: str, label: str) -> str:
-        k = (key or "").lower()
-        if k == "verification_code":
-            return "Enter the verification code sent to your official email/phone."
-        if k == "password":
-            return "Portal password is required to continue this application."
-        if k == "expected_ctc_lpa":
-            return "What is your expected CTC (LPA) for this application?"
-        if k == "current_ctc_lpa":
-            return "What is your current CTC (LPA)?"
-        if k == "notice_period_days":
-            return "What is your notice period in days?"
-        if k == "postal_code":
-            return "What postal code should be used for this application?"
-        if k == "address_line_1":
-            return "Provide address line 1 for this application."
-        if k == "city":
-            return "Provide city for this application."
-        if k == "state":
-            return "Provide state/province for this application."
-        if k == "country":
-            return "Provide country for this application."
-        if k == "hear_about_us_platform":
-            return "Which social media platform should be selected?"
-        if k == "can_join_immediately":
-            return "Can you join immediately? (yes/no)"
-        if k == "applied_before":
-            return "Have you applied to this company before? (yes/no)"
-        if k == "worked_here_before":
-            return "Have you worked for this company or subsidiary before? (yes/no)"
-        if k == "previous_company_email":
-            return "Provide your previous company email (use official email format)."
-        if k == "previous_employee_id":
-            return "Provide previous employee ID if requested."
-        if k == "previous_manager_name":
-            return "Provide previous manager name if requested."
-        if k == "local_given_name":
-            return "Provide local given name if required by portal."
-        if k == "local_family_name":
-            return "Provide local family name if required by portal."
-        if k == "willing_to_relocate":
-            return "Are you willing to relocate? (yes/no)"
-        if k == "requires_sponsorship":
-            return "Do you require visa/work sponsorship? (yes/no)"
-        if k == "work_authorization":
-            return "What is your work authorization status?"
-        if k == "phone_type":
-            return "Preferred phone type for this application."
-        if k == "phone_country_code":
-            return "Preferred phone country code."
-        if k == "hear_about_us":
-            return "How did you hear about this role?"
-        if k == "resume_file":
-            return "Upload/select a resume file for this application."
-        return f"Provide value for: {label or key}"
+        return field_resolution.input_question(key, label)
 
     def _answer_overrides_for_application(
         self, user: Optional[UserProfile], app: Optional[Application]
     ) -> dict[str, Any]:
-        merged: dict[str, Any] = {}
-        if user and isinstance(getattr(user, "application_answers", None), dict):
-            for k, v in user.application_answers.items():
-                if not isinstance(k, str) or k.startswith("__"):
-                    continue
-                if isinstance(v, (dict, list, tuple, set)):
-                    continue
-                nk = self._normalize_input_key(str(k))
-                if nk:
-                    merged[nk] = v
-        if app and isinstance(getattr(app, "user_inputs", None), dict):
-            for k, v in app.user_inputs.items():
-                if not isinstance(k, str) or k.startswith("__"):
-                    continue
-                if isinstance(v, (dict, list, tuple, set)):
-                    continue
-                nk = self._normalize_input_key(str(k))
-                if nk:
-                    merged[nk] = v
-        return merged
+        return field_resolution.answer_overrides_for_application(user, app)
 
     @staticmethod
     def _as_yes_no(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return "Yes" if value else "No"
-        text = str(value).strip().lower()
-        if text in {"yes", "y", "true", "1"}:
-            return "Yes"
-        if text in {"no", "n", "false", "0"}:
-            return "No"
-        return None
+        return field_resolution.as_yes_no(value)
 
     def _answer_value_for_key(
         self,
@@ -1779,156 +1337,7 @@ class JobApplier:
         user: Optional[UserProfile],
         overrides: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
-        resolved_key = self._normalize_input_key(key)
-        answers = overrides or {}
-        source_keys = {
-            "hear_about_us",
-            "how_did_you_hear_about_us",
-            "source_channel",
-            "source_of_application",
-            "job_source",
-            "referral_source",
-        }
-        source_platform_keys = {
-            "hear_about_us_platform",
-            "social_media_platform",
-            "source_platform",
-        }
-        phone_country_code_keys = {"phone_country_code", "country_code", "dial_code", "mobile_country_code"}
-        phone_type_keys = {"phone_type", "contact_type", "number_type"}
-        phone_extension_keys = {"phone_extension", "extension", "ext"}
-
-        if resolved_key in answers and answers[resolved_key] not in (None, ""):
-            explicit = str(answers[resolved_key]).strip()
-            if resolved_key == "phone":
-                return self._normalize_mobile_number(explicit)
-            if resolved_key in phone_country_code_keys:
-                return self.default_phone_country_code
-            if resolved_key in phone_type_keys:
-                return "mobile"
-            if resolved_key in phone_extension_keys:
-                return "0"
-            if resolved_key in source_keys:
-                return self.default_source_channel
-            if resolved_key in source_platform_keys:
-                return self.default_source_platform
-            return explicit
-
-        if resolved_key in {"verification_code", "otp", "security_code", "pin"}:
-            for alt in ("verification_code", "otp", "security_code", "pin", "two_factor_code"):
-                if alt in answers and answers[alt] not in (None, ""):
-                    return str(answers[alt])
-            return None
-        if resolved_key == "password":
-            for alt in ("password", "portal_password", "account_password"):
-                if alt in answers and answers[alt] not in (None, ""):
-                    return str(answers[alt])
-            return None
-
-        if resolved_key == "official_email":
-            resolved_key = "email"
-        if resolved_key == "previous_company_email":
-            resolved_key = "email"
-
-        if not user:
-            if resolved_key in {"applied_before", "worked_here_before"}:
-                return "No"
-            if resolved_key == "previous_employee_id":
-                return "0"
-            if resolved_key == "previous_manager_name":
-                return "NA"
-            if resolved_key in phone_country_code_keys:
-                return self.default_phone_country_code
-            if resolved_key in phone_type_keys:
-                return "mobile"
-            if resolved_key in phone_extension_keys:
-                return "0"
-            if resolved_key in {"postal_code", "zip_code", "pincode"}:
-                return self.default_postal_code
-            if resolved_key == "country":
-                return self.default_country
-            if resolved_key == "state":
-                return self.default_state
-            if resolved_key == "city":
-                return self.default_city
-            if resolved_key == "address_line_1":
-                return self.default_address_line_1
-            if resolved_key == "address_line_2":
-                return "NA"
-            return None
-
-        if resolved_key == "email":
-            return (user.email or "").strip() or None
-        if resolved_key == "previous_employee_id":
-            return "0"
-        if resolved_key == "previous_manager_name":
-            return "NA"
-        if resolved_key == "full_name":
-            return (user.full_name or "").strip() or None
-        if resolved_key == "first_name":
-            parts = (user.full_name or "").strip().split()
-            return parts[0].title() if parts else None
-        if resolved_key == "last_name":
-            parts = (user.full_name or "").strip().split()
-            return parts[-1].title() if len(parts) > 1 else None
-        if resolved_key == "local_given_name":
-            parts = (user.full_name or "").strip().split()
-            return parts[0].title() if parts else None
-        if resolved_key == "local_family_name":
-            parts = (user.full_name or "").strip().split()
-            return parts[-1].title() if len(parts) > 1 else (parts[0].title() if parts else None)
-        if resolved_key == "phone":
-            return self._normalize_mobile_number((user.phone or "").strip())
-        if resolved_key in phone_country_code_keys:
-            return self.default_phone_country_code
-        if resolved_key in phone_type_keys:
-            return "mobile"
-        if resolved_key in phone_extension_keys:
-            return "0"
-        if resolved_key in source_keys:
-            return self.default_source_channel
-        if resolved_key in source_platform_keys:
-            return self.default_source_platform
-        if resolved_key == "location":
-            return (user.location or "").strip() or "NA"
-        if resolved_key == "address_line_1":
-            return self.default_address_line_1
-        if resolved_key == "address_line_2":
-            return "NA"
-        if resolved_key == "city":
-            city, _, _ = self._location_parts(user.location or "")
-            return city
-        if resolved_key == "state":
-            _, state, _ = self._location_parts(user.location or "")
-            return state
-        if resolved_key == "country":
-            _, _, country = self._location_parts(user.location or "")
-            return country
-        if resolved_key == "linkedin_url":
-            return (user.linkedin_url or "").strip() or "https://linkedin.com"
-        if resolved_key == "expected_ctc_lpa" and user.expected_ctc_lpa is not None:
-            return str(user.expected_ctc_lpa)
-        if resolved_key == "current_ctc_lpa" and user.current_ctc_lpa is not None:
-            return str(user.current_ctc_lpa)
-        if resolved_key == "notice_period_days" and user.notice_period_days is not None:
-            return str(user.notice_period_days)
-        if resolved_key == "can_join_immediately":
-            return self._as_yes_no(user.can_join_immediately)
-        if resolved_key in {"applied_before", "worked_here_before"}:
-            return "No"
-        if resolved_key == "willing_to_relocate":
-            return self._as_yes_no(user.willing_to_relocate)
-        if resolved_key == "requires_sponsorship":
-            return self._as_yes_no(user.requires_sponsorship)
-        if resolved_key == "work_authorization":
-            return (user.work_authorization or "").strip() or None
-        if resolved_key == "postal_code":
-            return self.default_postal_code
-        if resolved_key == "total_experience_years":
-            if isinstance(user.experience, list) and user.experience:
-                return str(max(1, len(user.experience)))
-            return "1"
-        return None
+        return field_resolution.answer_value_for_key(key, user, overrides=overrides)
 
     def _resolve_field_value(
         self,
@@ -1937,11 +1346,7 @@ class JobApplier:
         user: Optional[UserProfile],
         overrides: Optional[dict[str, Any]] = None,
     ) -> tuple[str, Optional[str]]:
-        key = self._input_key_from_meta(meta, input_type)
-        explicit = self._answer_value_for_key(key, user, overrides=overrides)
-        if explicit not in (None, ""):
-            return key, str(explicit)
-        return key, None
+        return field_resolution.resolve_field_value(meta, input_type, user, overrides=overrides)
 
     async def _collect_required_inputs_from_page(
         self,
@@ -4532,62 +3937,11 @@ class JobApplier:
 
     @staticmethod
     def _default_salary_answer(meta: str, user: UserProfile) -> str:
-        expected_lpa = user.expected_ctc_lpa if user and user.expected_ctc_lpa is not None else None
-        current_lpa = user.current_ctc_lpa if user and user.current_ctc_lpa is not None else None
-        use_lpa = expected_lpa
-        if any(k in meta for k in ("current", "present", "existing")):
-            use_lpa = current_lpa if current_lpa is not None else expected_lpa
-        if use_lpa is None:
-            return "0"
-        if any(k in meta for k in ("monthly", "per month", "/month")):
-            return str(int(round((use_lpa * 100000) / 12)))
-        # If units are explicit INR/annual, convert to absolute amount.
-        if any(k in meta for k in ("inr", "rupee", "per annum", "annual", "yearly")):
-            return str(int(round(use_lpa * 100000)))
-        if any(k in meta for k in ("lpa", "lakh", "salary", "ctc", "compensation")):
-            return str(int(round(use_lpa)))
-        return str(int(round(use_lpa)))
+        return field_resolution.default_salary_answer(meta, user)
 
     @staticmethod
     def _preferred_binary(meta: str, user: UserProfile) -> Optional[str]:
-        """Return 'yes' or 'no' when a binary choice can be inferred."""
-        if any(
-            k in meta
-            for k in (
-                "applied in the past",
-                "applied before",
-                "previously applied",
-                "have you applied",
-                "have you previously worked for",
-                "previously worked for",
-                "worked here before",
-                "worked for this company",
-                "worked for any subsidiary",
-                "subsidiary",
-            )
-        ):
-            return "no"
-        if any(k in meta for k in ("sponsor", "sponsorship")):
-            if user and user.requires_sponsorship is not None:
-                return "yes" if user.requires_sponsorship else "no"
-            return "no"
-        if any(k in meta for k in ("authorized", "work authorization", "legally")):
-            if user and user.requires_sponsorship is not None:
-                return "no" if user.requires_sponsorship else "yes"
-            return "yes"
-        if any(k in meta for k in ("relocate", "relocation")):
-            if user and user.willing_to_relocate is not None:
-                return "yes" if user.willing_to_relocate else "no"
-            return "yes"
-        if any(k in meta for k in ("immediate", "join now", "available to join")):
-            if user and user.can_join_immediately is not None:
-                return "yes" if user.can_join_immediately else "no"
-            if user and user.notice_period_days == 0:
-                return "yes"
-            return "no"
-        if any(k in meta for k in ("experience", "comfortable", "do you have", "are you able")):
-            return "yes"
-        return None
+        return field_resolution.preferred_binary(meta, user)
 
     async def _choose_select_option(
         self,
@@ -5423,36 +4777,15 @@ class JobApplier:
 
     @staticmethod
     def _submission_blocker_message(reason: str) -> str:
-        mapping = {
-            "video_processing_pending": "Portal is still processing video answers; retry after processing completes.",
-            "required_fields_missing": "Required form fields are still missing.",
-            "required_questions_missing": "Required screening questions are still unanswered.",
-            "required_source_missing": "A required application source field is missing.",
-            "postal_code_format_error": "Postal code format is invalid for this portal.",
-            "verification_code_required": "A verification code is required before submit.",
-            "portal_login_required": "Portal sign-in/account creation must be completed before submit.",
-            "submission_error": "Portal reported a submission error.",
-            "captcha_required": "CAPTCHA/verification is required before submit.",
-        }
-        return mapping.get(reason, reason)
+        return field_resolution.submission_blocker_message(reason)
 
     @staticmethod
     def _is_auto_resolvable_submission_blocker(reason: Optional[str]) -> bool:
-        return (reason or "") in {
-            "required_fields_missing",
-            "required_questions_missing",
-            "required_source_missing",
-            "postal_code_format_error",
-            "submission_error",
-        }
+        return field_resolution.is_auto_resolvable_submission_blocker(reason)
 
     @staticmethod
     def _is_hard_submission_blocker(reason: Optional[str]) -> bool:
-        return (reason or "") in {
-            "verification_code_required",
-            "portal_login_required",
-            "captcha_required",
-        }
+        return field_resolution.is_hard_submission_blocker(reason)
 
     async def _progress_workday_apply_start(
         self, page: Page, resume_path: str, app: Application, db
