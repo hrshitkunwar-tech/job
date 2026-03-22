@@ -1,8 +1,10 @@
 # CareerAgent (`job`)
 
-AI-powered job application automation. Scrapes LinkedIn for matching positions, scores them against your profile, tailors your resume for each one, and submits applications automatically.
+End-to-end workflow automation for a messy, real-world problem: scrapes a data source for opportunities, scores them against a profile using a weighted model, tailors the output with an LLM, and executes the final action — with a human-in-the-loop checkpoint before submission.
 
-> Part of **Navigator Lab** alongside the public [navigator](https://github.com/hrshitkunwar-tech/navigator) thesis repo and internal demo surfaces for visual reasoning playback and outreach operations.
+The domain is job applications. The pattern is what Navigator is built on: context retrieval → scoring → tailoring → execution → logging. Works for a human running their own job search. Works for an agent running it autonomously.
+
+> Part of **Navigator Lab** — an open research portfolio building AI execution infrastructure for software interfaces.
 
 Runs entirely locally by default — no cloud API costs required.
 
@@ -43,6 +45,24 @@ You set the thresholds. The bot handles the volume.
 Both thresholds are configurable in `.env`.
 
 CareerAgent now treats **Vibe Match** as a first-class signal: startup velocity, ownership level, frontier-tech alignment, and team shape are scored against the candidate's manifesto and preferences.
+
+---
+
+## What This Proves
+
+The job search domain is a clean proof of the Navigator execution pattern — a complete, messy, real-world workflow with multiple tools, stateful context, human judgment at the edges, and structured logging throughout.
+
+The same loop maps directly to GTM operations:
+
+| Job domain | GTM equivalent |
+|---|---|
+| LinkedIn scrape | Gong transcript / Salesforce opportunity pull |
+| 5-factor job score | Account health score / opportunity fit score |
+| Resume tailoring | Follow-up email / renewal brief / QBR slide |
+| 60-second pause before apply | Human review before send |
+| SQLite decision log | CRM activity log / call outcome record |
+
+If the pattern works on job applications, it works on customer-facing workflows. And it works the same whether the operator is a person or an agent.
 
 ---
 
