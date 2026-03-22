@@ -160,3 +160,15 @@ Background task flow:
 **Session persistence.** LinkedIn browser state is stored to disk. Authenticate once; subsequent runs reuse the session. Handles security checkpoints by detecting them and waiting for manual resolution.
 
 **Local-first default.** Ollama + SQLite means zero cloud dependency. Your resume, credentials, and application history stay on your machine unless you configure a cloud LLM provider.
+
+---
+
+## Navigator Lab
+
+| Repo | Layer | What it does |
+|---|---|---|
+| [navigator](https://github.com/hrshitkunwar-tech/navigator) | Thesis | 5-layer architecture for AI execution on software interfaces |
+| [VisionGuide](https://github.com/hrshitkunwar-tech/VisionGuide) | Perception | Screenshot → Gemini vision → real-time UI guidance |
+| [zoneguide](https://github.com/hrshitkunwar-tech/zoneguide) | Recording | DOM interaction capture and replay, zero dependencies |
+| [job](https://github.com/hrshitkunwar-tech/job) | Applied | CareerAgent: score → tailor → apply, local-first |
+| [saas-atlas](https://github.com/hrshitkunwar-tech/saas-atlas) | Data | Searchable directory of 200+ SaaS tools |
